@@ -1,17 +1,50 @@
-// Comet Courier — an original endless runner by Grok Bot for Joseph.
-// All art is drawn procedurally with Phaser Graphics. No external assets.
+// Season Shift v2 — SEASON_SHIFT_V2
+// An original trail runner for Joseph. Ember & Frost form-shift.
+// All 40 routes share one continuous difficulty curve (kept from v1).
 (() => {
 'use strict';
 const W = 720;
 const H = Math.round(Math.min(Math.max(W * (window.innerHeight / Math.max(window.innerWidth, 1)), 1280), 1700));
-const VPX = W / 2, HY = Math.round(H * 0.34), PY = H - 200, LW = 200, D = 22, SPAWNZ = 170;
+const VPX = W / 2, HY = Math.round(H * 0.44), PY = H - 210, LW = 188, D = 22, SPAWNZ = 170;
+const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
-const SOLAR = 0, LUNAR = 1;
-const PAL = [
-  { skyTop: 0x2a0b3d, skyBot: 0xff7a59, road: 0x2b1640, edge: 0xffb347, accent: 0xff5e7e, name: 'SOLAR' },
-  { skyTop: 0x030b2a, skyBot: 0x1f5f8b, road: 0x0e1c38, edge: 0x5ef2ff, accent: 0x9b7bff, name: 'LUNAR' }
+const EMBER = 0, FROST = 1;
+const LEVELS_PER = 10, LEVEL_COUNT = 40;
+const PHASE_COL = [0xff6a21, 0x7ad7ff];
+const PHASE_NAME = ['EMBER', 'FROST'];
+const VERSION = 'SEASON_SHIFT_V2';
+
+const SEASONS = [
+  { name: 'SPRING', short: 'SPRING', hint: 'Blossoms on the meadow trail.',
+    lows: ['log', 'fence', 'rock'], weather: 'petal', accent: 0xff9ab8 },
+  { name: 'SUMMER', short: 'SUMMER', hint: 'A sun-baked path along the shore.',
+    lows: ['log', 'fence', 'rock'], weather: 'dust', accent: 0xffc14d },
+  { name: 'AUTUMN', short: 'AUTUMN', hint: 'Falling leaves on the forest trail.',
+    lows: ['log', 'fence', 'rock'], weather: 'leaf', accent: 0xff7a3d },
+  { name: 'WINTER', short: 'WINTER', hint: 'Snow and ice on the mountain path.',
+    lows: ['snowbank', 'rock', 'log'], weather: 'snow', accent: 0xb8e0ff }
 ];
-const PHASE_COL = [0xffa53d, 0x4fe3ff];
+
+const UPGRADES = [
+  { id: 'magnet',      name: 'Coin Magnet',   blurb: 'Pulls nearby acorns into your lane.',
+    prices: [50, 120, 250, 500, 900] },
+  { id: 'shield',      name: 'Trail Shield',  blurb: 'Start each run with extra hit shields.',
+    prices: [80, 180, 350, 700, 1200] },
+  { id: 'doubleCoins', name: 'Double Coins',  blurb: 'Acorns from a run are worth more.',
+    prices: [100, 250, 500, 1000, 2000] },
+  { id: 'headStart',   name: 'Head Start',    blurb: 'Begin each trail further down the path.',
+    prices: [60, 150, 300, 600, 1100] },
+  { id: 'extraLife',   name: 'Extra Life',    blurb: 'Survive a hit and keep running.',
+    prices: [150, 400, 800, 1500, 2500] }
+];
+const COSTUMES = [
+  { id: 'classic',    name: 'Classic',     price: 0,   key: 'nova-ember-run1' },
+  { id: 'scarf',      name: 'Scarf',       price: 200, key: 'nova-costume-scarf' },
+  { id: 'raincoat',   name: 'Raincoat',    price: 350, key: 'nova-costume-raincoat' },
+  { id: 'sunglasses', name: 'Sunglasses',  price: 300, key: 'nova-costume-sunglasses' },
+  { id: 'parka',      name: 'Winter Parka',price: 500, key: 'nova-costume-parka' },
+  { id: 'ninja',      name: 'Ninja',       price: 800, key: 'nova-costume-ninja' }
+];
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpColor(c1, c2, t) {
@@ -22,10 +55,100 @@ function proj(lane, z, h = 0) {
   const s = D / (D + Math.max(z, -D + 1));
   return { x: VPX + lane * LW * s, y: HY + (PY - HY) * s - h * s, s };
 }
-function loadBest() { try { return parseInt(localStorage.getItem(BEST_KEY) || '0', 10) || 0; } catch (e) { return 0; } }
-function saveBest(v) { try { localStorage.setItem(BEST_KEY, String(v)); } catch (e) {} }
 
-// ---------- tiny synth (created on first user gesture: iOS-safe) ----------
+// One continuous difficulty curve across all 40 levels (index 0..39).
+// u(i) is strictly increasing, so every later route is harder than the one before:
+//   Season N, Level 1  (index 10N)  is harder than  Season N-1, Level 10  (index 10N-1)
+//   on speed, obstacle density, switch-wall frequency, and tighter gaps.
+// A small in-level ramp uses only 40% of the step to the next route, so a level's
+// hardest moment still stays easier than the next level's starting stats.
+function curveU(i) {
+  const t = Math.max(0, i) / 39;
+  return t * 0.68 + t * t * 0.32;
+}
+function difficulty(i) {
+  const idx = Math.max(0, Math.min(LEVEL_COUNT - 1, i | 0));
+  const u = curveU(idx);
+  return {
+    index: idx,
+    season: (idx / LEVELS_PER) | 0,
+    stage: (idx % LEVELS_PER) + 1,
+    u,
+    baseSpeed: 44 + 70 * u,
+    density: 0.12 + 0.58 * u,
+    gateChance: idx < 2 ? 0 : 0.12 + 0.34 * u,
+    pwallChance: idx < 3 ? 0 : 0.10 + 0.48 * u,
+    gapT: 1.20 - 0.64 * u,
+    breather: 0.26 - 0.20 * u,
+    minGateGap: idx < 2 ? 99 : Math.max(2, Math.round(6 - 3.5 * u)),
+    goal: 300 + idx * 20
+  };
+}
+function mixDiff(i, progress) {
+  const a = difficulty(i), p = Math.max(0, Math.min(1, progress));
+  const uNext = i >= LEVEL_COUNT - 1 ? a.u + 0.04 : curveU(i + 1);
+  const u = a.u + (uNext - a.u) * 0.4 * p;
+  const virt = a.index + 0.4 * p;
+  return {
+    index: a.index, season: a.season, stage: a.stage, goal: a.goal, u, progress: p,
+    baseSpeed: 44 + 70 * u,
+    density: 0.12 + 0.58 * u,
+    gateChance: a.index < 2 ? 0 : 0.12 + 0.34 * u,
+    pwallChance: a.index < 3 ? 0 : 0.10 + 0.48 * u,
+    gapT: 1.20 - 0.64 * u,
+    breather: 0.26 - 0.20 * u,
+    minGateGap: a.index < 2 ? 99 : Math.max(2, Math.round(6 - 3.5 * u))
+  };
+}
+window.__difficulty = difficulty;
+window.__mixDiff = mixDiff;
+window.__LEVEL_COUNT = LEVEL_COUNT;
+window.__SHOP = { UPGRADES, COSTUMES };
+window.__VERSION = VERSION;
+
+function defaultSave() {
+  return {
+    unlocked: 1, cleared: 0, best: 0, levelBest: {},
+    coins: 0,
+    upgrades: { magnet: 0, shield: 0, doubleCoins: 0, headStart: 0, extraLife: 0 },
+    owned: { classic: true, scarf: false, raincoat: false, sunglasses: false, parka: false, ninja: false },
+    equipped: 'classic'
+  };
+}
+function applyCheats(s) {
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.get('unlockall') === '1') s.unlocked = LEVEL_COUNT;
+    const c = parseInt(q.get('coins') || '', 10);
+    if (c > 0) s.coins = c;
+  } catch (e) {}
+  return s;
+}
+function loadSave() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+    const base = defaultSave();
+    if (!s || typeof s !== 'object') {
+      const legacy = parseInt(localStorage.getItem(BEST_KEY) || '0', 10) || 0;
+      return applyCheats(Object.assign(base, { best: legacy }));
+    }
+    s.unlocked = Math.max(1, Math.min(LEVEL_COUNT, s.unlocked | 0));
+    s.cleared = Math.max(0, Math.min(LEVEL_COUNT, s.cleared | 0));
+    s.best = s.best | 0; s.levelBest = s.levelBest || {};
+    s.coins = Math.max(0, s.coins | 0);
+    s.upgrades = Object.assign({ magnet: 0, shield: 0, doubleCoins: 0, headStart: 0, extraLife: 0 }, s.upgrades || {});
+    s.owned = Object.assign({ classic: true, scarf: false, raincoat: false, sunglasses: false, parka: false, ninja: false }, s.owned || {});
+    if (!COSTUMES.some(c => c.id === s.equipped && s.owned[c.id])) s.equipped = 'classic';
+    return applyCheats(s);
+  } catch (e) { return applyCheats(defaultSave()); }
+}
+function writeSave(s) {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(s));
+    if (s.best) localStorage.setItem(BEST_KEY, String(s.best));
+  } catch (e) {}
+}
+
 const Sfx = {
   ctx: null,
   unlock() {
@@ -43,84 +166,414 @@ const Sfx = {
   jump() { this.tone(300, 700, 0.18, 'sine', 0.1); },
   slide() { this.tone(400, 150, 0.18, 'sawtooth', 0.04); },
   lane() { this.tone(500, 560, 0.05, 'sine', 0.05); },
-  phase(p) { p ? this.tone(900, 300, 0.25, 'sine', 0.1) : this.tone(300, 900, 0.25, 'sine', 0.1); },
-  hit() { this.tone(220, 40, 0.5, 'sawtooth', 0.15); }
+  phase(p) { p ? this.tone(900, 280, 0.28, 'sine', 0.1) : this.tone(280, 900, 0.28, 'sine', 0.1); },
+  hit() { this.tone(220, 40, 0.5, 'sawtooth', 0.15); },
+  buy() { this.tone(520, 880, 0.16, 'triangle', 0.1); },
+  win() { this.tone(520, 780, 0.18, 'triangle', 0.1); setTimeout(() => this.tone(780, 1040, 0.25, 'triangle', 0.1), 140); }
 };
+
+const ASSET_KEYS = [
+  'bg-spring','bg-summer','bg-autumn','bg-winter',
+  'ground-spring','ground-summer','ground-autumn','ground-winter',
+  'nova-ember-run1','nova-ember-run2','nova-ember-jump','nova-ember-slide',
+  'nova-frost-run1','nova-frost-jump','nova-frost-slide',
+  'nova-costume-scarf','nova-costume-raincoat','nova-costume-sunglasses','nova-costume-parka','nova-costume-ninja',
+  'obs-log','obs-fence','obs-rock','obs-snowbank','obs-branch','obs-stump',
+  'wall-fire','wall-ice','coin-acorn','part-leaf','part-petal'
+];
+
+class BootScene extends Phaser.Scene {
+  constructor() { super('boot'); }
+  preload() {
+    const barBg = this.add.rectangle(VPX, H * 0.55, 440, 22, 0x0d1a0c, 0.9).setOrigin(0.5);
+    const bar = this.add.rectangle(VPX - 214, H * 0.55, 4, 14, 0xffc14d, 1).setOrigin(0, 0.5);
+    this.add.text(VPX, H * 0.42, 'SEASON SHIFT', {
+      fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif',
+      fontSize: '64px', color: '#fff4d6', fontStyle: 'bold', stroke: '#1a2a14', strokeThickness: 8
+    }).setOrigin(0.5);
+    this.add.text(VPX, H * 0.48, 'Loading the trails…', {
+      fontFamily: 'Trebuchet MS, Avenir Next, Arial, sans-serif', fontSize: '24px', color: '#dce8c8'
+    }).setOrigin(0.5);
+    this.load.on('progress', p => { bar.width = 4 + 424 * p; });
+    for (const k of ASSET_KEYS) {
+      const ext = k.startsWith('bg-') || k.startsWith('ground-') ? 'jpg' : 'png';
+      this.load.image(k, 'assets/' + k + '.' + ext);
+    }
+  }
+  create() { this.scene.start('run'); }
+}
 
 class RunScene extends Phaser.Scene {
   constructor() { super('run'); }
 
   create() {
-    this.bgG = this.add.graphics();
-    this.g = this.add.graphics();
-    this.fxG = this.add.graphics();
-    this.stars = [];
-    for (let i = 0; i < 120; i++) this.stars.push({ x: Math.random() * W, y: Math.random() * HY * 1.05, r: Math.random() * 2.2 + 0.4, tw: Math.random() * 6 });
-    this.particles = [];
-    this.best = loadBest();
+    this.save = loadSave();
+    writeSave(this.save);
+    this.best = this.save.best;
     this.t = 0;
+    this.viewSeason = this.currentSeasonView();
+    this.selLevel = Math.min(this.save.unlocked - 1, LEVEL_COUNT - 1);
+    this.route = 0; this.endless = false;
+    this.shopTab = 'upgrades';
+    this.particles = [];
+    this.weather = [];
+    this.objs = [];
+    this.sprPool = [];
+    this.mapHits = [];
+    this.uiHits = [];
+
+    this.bgSpr = this.add.image(VPX, 0, 'bg-spring').setOrigin(0.5, 0).setDepth(0);
+    this.fitBackdrop();
+
+    this.roadCanvas = document.createElement('canvas');
+    this.roadCanvas.width = W; this.roadCanvas.height = H;
+    this.roadCtx = this.roadCanvas.getContext('2d');
+    if (this.textures.exists('roadCanvas')) this.textures.remove('roadCanvas');
+    this.roadTex = this.textures.addCanvas('roadCanvas', this.roadCanvas);
+    this.roadSpr = this.add.image(0, 0, 'roadCanvas').setOrigin(0, 0).setDepth(1);
+
+    this.g = this.add.graphics().setDepth(2);
+    this.fxG = this.add.graphics().setDepth(20);
+    this.mapG = this.add.graphics().setDepth(8);
+    this.uiG = this.add.graphics().setDepth(9);
+
+    this.playerSpr = this.add.image(VPX, PY, 'nova-ember-run1').setOrigin(0.5, 0.9).setDepth(15);
+    this.playerSpr.setDisplaySize(210, 250);
+
+    this.groundImgs = {
+      0: this.textures.get('ground-spring').getSourceImage(),
+      1: this.textures.get('ground-summer').getSourceImage(),
+      2: this.textures.get('ground-autumn').getSourceImage(),
+      3: this.textures.get('ground-winter').getSourceImage()
+    };
+
     this.makeUI();
     this.resetRun();
-    this.state = 'title';
-    this.showTitle(true);
+    this.state = 'home';
+    this.showHome(true);
     this.setupInput();
+    this.seedWeather(80);
+  }
+
+  fitBackdrop() {
+    const key = 'bg-' + (SEASONS[this.seasonIndex()] || SEASONS[0]).name.toLowerCase();
+    if (this.textures.exists(key) && this.bgSpr.texture.key !== key) this.bgSpr.setTexture(key);
+    const tex = this.textures.get(this.bgSpr.texture.key);
+    const src = tex.getSourceImage();
+    const scale = Math.max(W / src.width, (HY + 80) / (src.height * 0.62));
+    this.bgSpr.setScale(scale);
+    this.bgSpr.y = 0;
+    this.bgSpr.x = VPX - (this.px || 0) * 18;
+  }
+  seasonIndex() {
+    if (this.state === 'play' || this.state === 'over' || this.state === 'clear') return (this.diff && this.diff.season) || 0;
+    return this.viewSeason || 0;
+  }
+  currentSeasonView() {
+    const c = Math.min(this.save.cleared, LEVEL_COUNT);
+    if (c >= LEVEL_COUNT) return 3;
+    return Math.min(3, (c / LEVELS_PER) | 0);
   }
 
   txt(x, y, s, size, color = '#ffffff', extra = {}) {
-    return this.add.text(x, y, s, Object.assign({ fontFamily: '"Trebuchet MS", "Avenir Next", Arial, sans-serif', fontSize: size + 'px', color, fontStyle: 'bold', align: 'center', stroke: '#140826', strokeThickness: Math.max(4, size / 7) }, extra)).setOrigin(0.5).setDepth(10);
+    return this.add.text(x, y, s, Object.assign({
+      fontFamily: '"Trebuchet MS", "Avenir Next", Arial, sans-serif',
+      fontSize: size + 'px', color, fontStyle: 'bold', align: 'center',
+      stroke: '#1a140c', strokeThickness: Math.max(4, size / 7)
+    }, extra)).setOrigin(0.5).setDepth(10);
   }
 
   makeUI() {
-    this.scoreT = this.txt(30, 60, '0', 52).setOrigin(0, 0.5);
-    this.coinT = this.txt(W - 30, 60, '0', 44, '#ffe066').setOrigin(1, 0.5);
-    this.phaseT = this.txt(VPX, H - 70, 'SOLAR', 34);
-    this.hintT = this.txt(VPX, H - 30, 'tap to phase-shift', 22, '#ffffffaa', { strokeThickness: 3 });
-    this.toastT = this.txt(VPX, 300, '', 40, '#ffffff').setAlpha(0);
+    this.scoreT = this.txt(30, 58, '0', 44).setOrigin(0, 0.5);
+    this.coinT = this.txt(W - 30, 58, '0', 36, '#ffe066').setOrigin(1, 0.5);
+    this.routeT = this.txt(VPX, 58, '', 26, '#fff0c8');
+    this.phaseT = this.txt(VPX, H - 70, 'EMBER', 34, '#ffb06a');
+    this.hintT = this.txt(VPX, H - 30, 'tap to shift form', 20, '#ffffffaa', { strokeThickness: 3 });
+    this.livesT = this.txt(30, 118, '', 24, '#ff8a8a').setOrigin(0, 0.5);
+    this.toastT = this.txt(VPX, H - 280, '', 32, '#ffffff').setAlpha(0).setDepth(30);
 
-    this.titleT = this.txt(VPX, 200, 'COMET\nCOURIER', 104, '#ffd166', { strokeThickness: 14, lineSpacing: -18 });
-    this.subT = this.txt(VPX, HY - 50, 'Deliver the starmail. Dodge the debris.', 28, '#ffffff');
-    this.helpT = this.txt(VPX, HY + 250, 'Swipe ← → to switch lanes\nSwipe ↑ jump  ·  Swipe ↓ slide\nTAP to Phase-Shift: SOLAR ⇄ LUNAR\nwalls of your phase are solid,\nthe other phase you ghost through', 27, '#e8ddff', { lineSpacing: 8 });
-    this.startT = this.txt(VPX, H - 120, 'TAP TO START', 52, '#ffffff');
-    this.bestT = this.txt(VPX, H - 55, '', 28, '#ffe066');
+    this.titleT = this.txt(VPX, 150, 'SEASON\nSHIFT', 96, '#fff4d6', {
+      fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif',
+      strokeThickness: 14, lineSpacing: -16
+    });
+    this.subT = this.txt(VPX, 330, 'Nova the fox  ·  Ember & Frost', 26, '#ffe7b0');
+    this.homeHelpT = this.txt(VPX, 390, 'Swipe to move, jump and slide.\nTap to shift between Ember and Frost.\nIce walls open in Frost. Fire walls open in Ember.', 22, '#efe6d2', { lineSpacing: 6, strokeThickness: 3 });
+    this.playT = this.txt(VPX, H - 340, 'PLAY', 56, '#1a140c', { strokeThickness: 0 });
+    this.trailsT = this.txt(VPX - 160, H - 210, 'TRAILS', 32, '#fff4d6');
+    this.shopT = this.txt(VPX + 160, H - 210, 'SHOP', 32, '#fff4d6');
+    this.homeWalletT = this.txt(VPX, H - 90, '', 28, '#ffe066');
+    this.homeBestT = this.txt(VPX, H - 50, '', 22, '#efe6d2', { strokeThickness: 3 });
 
-    this.overT = this.txt(VPX, 330, 'PARCEL\nLOST!', 96, '#ff6b8b', { strokeThickness: 14, lineSpacing: -14 });
-    this.finalT = this.txt(VPX, 560, '', 44, '#ffffff', { lineSpacing: 12 });
-    this.newBestT = this.txt(VPX, 720, 'NEW BEST!', 54, '#ffe066');
-    this.retryT = this.txt(VPX, H - 150, 'TAP TO RUN AGAIN', 48, '#ffffff');
-    this.showOver(false);
+    this.mapTitleT = this.txt(VPX, 70, 'CHOOSE A TRAIL', 44, '#fff4d6', { fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif' });
+    this.mapSubT = this.txt(VPX, 130, '', 26, '#efe6d2');
+    this.mapHintT = this.txt(VPX, 255, '', 22, '#ffffffaa', { strokeThickness: 3 });
+    this.mapProgT = this.txt(VPX, H - 200, '', 26, '#ffe066');
+    this.endlessT = this.txt(VPX, H - 130, 'ENDLESS RUN', 40, '#ffffff');
+    this.mapBackT = this.txt(VPX, H - 60, 'HOME', 28, '#ffffffaa');
+    this.seasonTs = []; this.levelTs = [];
+    for (let s = 0; s < 4; s++) this.seasonTs.push(this.txt(90 + s * 180, 250, SEASONS[s].short, 18, '#ffffff'));
+    for (let i = 0; i < 10; i++) this.levelTs.push(this.txt(0, 0, String(i + 1), 36, '#ffffff'));
+    this.mapItems = [this.mapTitleT, this.mapSubT, this.mapHintT, this.mapProgT, this.endlessT, this.mapBackT, ...this.seasonTs, ...this.levelTs];
+
+    this.shopTitleT = this.txt(VPX, 70, 'SHOP', 52, '#fff4d6', { fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif' });
+    this.shopWalletT = this.txt(VPX, 125, '', 28, '#ffe066');
+    this.shopTabUpT = this.txt(VPX - 150, 190, 'UPGRADES', 26, '#1a140c', { strokeThickness: 0 });
+    this.shopTabCoT = this.txt(VPX + 150, 190, 'COSTUMES', 26, '#fff4d6');
+    this.shopBackT = this.txt(VPX, H - 60, 'HOME', 28, '#ffffffaa');
+    this.shopLines = [];
+    for (let i = 0; i < 12; i++) {
+      this.shopLines.push(this.txt(0, 0, '', 24, '#fff4d6').setVisible(false));
+    }
+    this.shopPreview = this.add.image(0, 0, 'nova-ember-run1').setVisible(false).setDepth(11).setOrigin(0.5, 0.6);
+    this.shopItems = [this.shopTitleT, this.shopWalletT, this.shopTabUpT, this.shopTabCoT, this.shopBackT, this.shopPreview, ...this.shopLines];
+
+    this.overT = this.txt(VPX, 300, 'TRAIL\nLOST!', 90, '#ff6b8b', { strokeThickness: 14, lineSpacing: -12 });
+    this.finalT = this.txt(VPX, 530, '', 40, '#ffffff', { lineSpacing: 10 });
+    this.newBestT = this.txt(VPX, 700, 'NEW BEST!', 50, '#ffe066');
+    this.retryT = this.txt(VPX, H - 220, 'TAP TO RETRY', 42, '#ffffff');
+    this.toMapT = this.txt(VPX, H - 140, 'TRAILS', 32, '#ffffff');
+    this.toHomeT = this.txt(VPX, H - 80, 'HOME', 28, '#ffffffcc');
+
+    this.clearT = this.txt(VPX, 300, 'TRAIL\nCLEAR!', 90, '#7CF7A0', { strokeThickness: 14, lineSpacing: -12 });
+    this.clearSubT = this.txt(VPX, 530, '', 40, '#ffffff', { lineSpacing: 10 });
+    this.nextT = this.txt(VPX, H - 220, 'NEXT TRAIL', 42, '#ffffff');
   }
 
-  showTitle(v) {
-    [this.titleT, this.subT, this.helpT, this.startT, this.bestT].forEach(o => o.setVisible(v));
-    [this.scoreT, this.coinT, this.phaseT, this.hintT].forEach(o => o.setVisible(!v));
-    this.bestT.setText(this.best ? 'BEST  ' + this.best : '');
+  setGroup(arr, v) { arr.forEach(o => { if (o && o.setVisible) o.setVisible(v); }); }
+  hudItems() { return [this.scoreT, this.coinT, this.routeT, this.phaseT, this.hintT, this.livesT]; }
+  homeItems() { return [this.titleT, this.subT, this.homeHelpT, this.playT, this.trailsT, this.shopT, this.homeWalletT, this.homeBestT]; }
+  overItems() { return [this.overT, this.finalT, this.newBestT, this.retryT, this.toMapT, this.toHomeT]; }
+  clearItems() { return [this.clearT, this.clearSubT, this.nextT, this.toMapT, this.toHomeT]; }
+
+  hideAll() {
+    this.setGroup(this.homeItems(), false);
+    this.setGroup(this.hudItems(), false);
+    this.setGroup(this.mapItems, false);
+    this.setGroup(this.shopItems, false);
+    this.setGroup(this.overItems(), false);
+    this.setGroup(this.clearItems(), false);
+    this.shopPreview.setVisible(false);
+    if (this.hideShopExtras) this.hideShopExtras();
+    this.mapG.clear(); this.uiG.clear();
+    this.uiHits = [];
   }
-  showOver(v) { [this.overT, this.finalT, this.newBestT, this.retryT].forEach(o => o.setVisible(v)); }
+
+  showHome(v) {
+    this.hideAll();
+    if (!v) return;
+    this.setGroup(this.homeItems(), true);
+    this.homeWalletT.setText('Acorns  ' + this.save.coins);
+    this.homeBestT.setText(this.save.best
+      ? ('BEST  ' + this.save.best + '   ·   ' + this.save.cleared + ' / 40 TRAILS')
+      : '4 seasons  ·  40 trails, each harder than the last');
+    this.layoutHome();
+  }
+  layoutHome() {
+    const g = this.uiG; g.clear(); this.uiHits = [];
+    g.fillStyle(0xffc14d, 1); g.fillRoundedRect(VPX - 200, H - 390, 400, 100, 50);
+    g.fillStyle(0x2d5a27, 1); g.fillRoundedRect(VPX - 300, H - 250, 200, 80, 40);
+    g.fillStyle(0x6b3a1f, 1); g.fillRoundedRect(VPX + 100, H - 250, 200, 80, 40);
+    this.uiHits.push({ kind: 'play', x: VPX - 200, y: H - 390, w: 400, h: 100 });
+    this.uiHits.push({ kind: 'map', x: VPX - 300, y: H - 250, w: 200, h: 80 });
+    this.uiHits.push({ kind: 'shop', x: VPX + 100, y: H - 250, w: 200, h: 80 });
+  }
+
+  showMap(v) {
+    this.hideAll();
+    if (!v) return;
+    this.setGroup(this.mapItems, true);
+    this.layoutMap();
+  }
+  layoutMap() {
+    const g = this.mapG; g.clear();
+    const unlocked = this.save.unlocked, cleared = this.save.cleared;
+    this.mapHits = []; this.uiHits = [];
+    this.mapSubT.setText(SEASONS[this.viewSeason].name);
+    this.mapHintT.setText(SEASONS[this.viewSeason].hint);
+    this.mapProgT.setText(cleared + ' / 40 trails cleared');
+    for (let s = 0; s < 4; s++) {
+      const x = 24 + s * 174, y = 168, w = 162, h = 58;
+      const open = unlocked > s * LEVELS_PER;
+      const active = s === this.viewSeason;
+      g.fillStyle(active ? 0xffc14d : (open ? 0x2d5a27 : 0x2a241c), 1);
+      g.fillRoundedRect(x, y, w, h, 16);
+      if (active) { g.lineStyle(3, 0xffffff, 1); g.strokeRoundedRect(x, y, w, h, 16); }
+      this.seasonTs[s].setPosition(x + w / 2, y + h / 2).setColor(active ? '#1a140c' : (open ? '#ffffff' : '#6a6658')).setText(open ? SEASONS[s].short : 'LOCKED');
+      this.mapHits.push({ kind: 'season', s, x, y, w, h });
+    }
+    const start = this.viewSeason * LEVELS_PER;
+    for (let n = 0; n < 10; n++) {
+      const i = start + n, col = n % 5, row = (n / 5) | 0;
+      const x = 86 + col * 137, y = 340 + row * 155, r = 52;
+      const isCleared = i < cleared, isOpen = i < unlocked, isSel = i === this.selLevel;
+      g.fillStyle(isCleared ? 0x2d6a4f : (isOpen ? 0x3d5a27 : 0x1a1520), 1);
+      g.fillCircle(x, y, r);
+      g.lineStyle(isSel ? 6 : 3, isCleared ? 0x7CF7A0 : (isOpen ? (isSel ? 0xffc14d : 0xc4e38a) : 0x333328), 1);
+      g.strokeCircle(x, y, r);
+      this.levelTs[n].setPosition(x, y).setText(String(n + 1)).setColor(isOpen ? '#ffffff' : '#555544');
+      this.mapHits.push({ kind: 'level', i, x: x - r, y: y - r, w: r * 2, h: r * 2 });
+    }
+    g.fillStyle(0x2d6cdf, 1); g.fillRoundedRect(VPX - 180, H - 160, 360, 64, 32);
+    g.fillStyle(0x000000, 0.25); g.fillRoundedRect(VPX - 80, H - 85, 160, 48, 24);
+    this.mapHits.push({ kind: 'endless', x: VPX - 180, y: H - 160, w: 360, h: 64 });
+    this.mapHits.push({ kind: 'back', x: VPX - 80, y: H - 85, w: 160, h: 48 });
+  }
+
+  showShop(v) {
+    this.hideAll();
+    if (!v) return;
+    this.setGroup([this.shopTitleT, this.shopWalletT, this.shopTabUpT, this.shopTabCoT, this.shopBackT], true);
+    this.layoutShop();
+  }
+  layoutShop() {
+    const g = this.uiG; g.clear(); this.uiHits = [];
+    this.shopLines.forEach(t => t.setVisible(false));
+    this.shopPreview.setVisible(false);
+    this.shopWalletT.setText('Acorns  ' + this.save.coins);
+    const up = this.shopTab === 'upgrades';
+    g.fillStyle(up ? 0xffc14d : 0x2a241c, 1); g.fillRoundedRect(VPX - 280, 160, 250, 60, 20);
+    g.fillStyle(!up ? 0xffc14d : 0x2a241c, 1); g.fillRoundedRect(VPX + 30, 160, 250, 60, 20);
+    this.shopTabUpT.setColor(up ? '#1a140c' : '#fff4d6').setPosition(VPX - 155, 190);
+    this.shopTabCoT.setColor(!up ? '#1a140c' : '#fff4d6').setPosition(VPX + 155, 190);
+    this.uiHits.push({ kind: 'tab', tab: 'upgrades', x: VPX - 280, y: 160, w: 250, h: 60 });
+    this.uiHits.push({ kind: 'tab', tab: 'costumes', x: VPX + 30, y: 160, w: 250, h: 60 });
+    g.fillStyle(0x000000, 0.25); g.fillRoundedRect(VPX - 80, H - 85, 160, 48, 24);
+    this.uiHits.push({ kind: 'back', x: VPX - 80, y: H - 85, w: 160, h: 48 });
+
+    if (up) {
+      UPGRADES.forEach((u, i) => {
+        const y = 250 + i * 155;
+        const lv = this.save.upgrades[u.id] | 0;
+        const max = u.prices.length;
+        const done = lv >= max;
+        const cost = done ? 0 : u.prices[lv];
+        g.fillStyle(0x1a140c, 0.72); g.fillRoundedRect(40, y, W - 80, 140, 20);
+        const t0 = this.shopLines[i * 2]; const t1 = this.shopLines[i * 2 + 1];
+        t0.setVisible(true).setOrigin(0, 0.5).setPosition(64, y + 40)
+          .setText(u.name + '   Lv ' + lv + '/' + max).setColor('#fff4d6').setFontSize('28px');
+        t1.setVisible(true).setOrigin(0, 0.5).setPosition(64, y + 82)
+          .setText(u.blurb).setColor('#d8d0c0').setFontSize('20px').setStroke('#1a140c', 3);
+        const label = done ? 'MAX' : ('BUY  ' + cost);
+        const can = !done && this.save.coins >= cost;
+        g.fillStyle(done ? 0x2d5a27 : (can ? 0xffc14d : 0x4a4438), 1);
+        g.fillRoundedRect(W - 250, y + 36, 170, 68, 16);
+        const bt = this.shopLines[10] && i === 0 ? null : null;
+        // per-row button label uses leftover lines 10+ or we draw text via a dedicated line
+        const btn = this.ensureShopBtn(i, W - 165, y + 70, label, done || can ? (done ? '#ffffff' : '#1a140c') : '#aaa088');
+        this.uiHits.push({ kind: 'buyUp', id: u.id, x: W - 250, y: y + 36, w: 170, h: 68 });
+      });
+    } else {
+      COSTUMES.forEach((c, i) => {
+        const col = i % 2, row = (i / 2) | 0;
+        const x = 40 + col * 340, y = 250 + row * 280, w = 320, h = 260;
+        const owned = !!this.save.owned[c.id];
+        const eq = this.save.equipped === c.id;
+        g.fillStyle(eq ? 0x3d5a27 : 0x1a140c, 0.8); g.fillRoundedRect(x, y, w, h, 20);
+        if (eq) { g.lineStyle(4, 0xffc14d, 1); g.strokeRoundedRect(x, y, w, h, 20); }
+        const spr = this.ensureShopSpr(i, c.key, x + w / 2, y + 110);
+        const label = eq ? 'EQUIPPED' : (owned ? 'EQUIP' : ('BUY  ' + c.price));
+        const can = eq || owned || this.save.coins >= c.price;
+        this.shopLines[i].setVisible(true).setOrigin(0.5).setPosition(x + w / 2, y + 210)
+          .setText(c.name).setColor('#fff4d6').setFontSize('24px');
+        g.fillStyle(eq ? 0x2d6a4f : (can ? 0xffc14d : 0x4a4438), 1);
+        g.fillRoundedRect(x + 50, y + 220, w - 100, 32, 14);
+        this.shopLines[i + 6].setVisible(true).setOrigin(0.5).setPosition(x + w / 2, y + 236)
+          .setText(label).setColor(eq || !can ? '#ffffff' : '#1a140c').setFontSize('16px').setStroke('#000000', 2);
+        this.uiHits.push({ kind: 'costume', id: c.id, x, y, w, h });
+      });
+    }
+  }
+  ensureShopBtn(i, x, y, label, color) {
+    // reuse shopLines 10 is not enough; use the name line's sibling already set. Draw label with a reserved text:
+    // We packed 2 lines per upgrade (0-9). Put button labels on a floating set by hijacking nothing —
+    // instead create leftover: shopLines only has 12. For 5 upgrades we used 0-9. Use a graphics-only button
+    // and overlay text via a map we store on this.shopBtns
+    if (!this.shopBtns) {
+      this.shopBtns = [];
+      for (let k = 0; k < 6; k++) this.shopBtns.push(this.txt(0, 0, '', 22, '#1a140c', { strokeThickness: 0 }).setDepth(12));
+    }
+    const t = this.shopBtns[i];
+    t.setVisible(true).setPosition(x, y).setText(label).setColor(color);
+    return t;
+  }
+  ensureShopSpr(i, key, x, y) {
+    if (!this.shopSprs) {
+      this.shopSprs = [];
+      for (let k = 0; k < 6; k++) this.shopSprs.push(this.add.image(0, 0, 'nova-ember-run1').setDepth(11).setOrigin(0.5, 0.7));
+    }
+    const s = this.shopSprs[i];
+    if (s.texture.key !== key && this.textures.exists(key)) s.setTexture(key);
+    s.setVisible(true).setPosition(x, y);
+    s.setDisplaySize(150, 170);
+    return s;
+  }
+  hideShopExtras() {
+    (this.shopBtns || []).forEach(t => t.setVisible(false));
+    (this.shopSprs || []).forEach(s => s.setVisible(false));
+  }
+
+  showOver(v) {
+    this.hideAll();
+    if (!v) return;
+    this.setGroup(this.overItems(), v);
+    this.clearT.setVisible(false); this.clearSubT.setVisible(false); this.nextT.setVisible(false);
+  }
+  showClear(v) {
+    this.hideAll();
+    if (!v) return;
+    this.setGroup(this.clearItems(), v);
+    this.overT.setVisible(false); this.finalT.setVisible(false); this.newBestT.setVisible(false); this.retryT.setVisible(false);
+  }
 
   resetRun() {
+    this.recycleAll();
     this.objs = [];
     this.lane = 0; this.px = 0;
     this.jumpH = 0; this.jumpV = 0; this.slideT = 0;
-    this.phase = SOLAR; this.phaseMix = 0; this.phaseCd = 0;
-    this.speed = 46; this.dist = 0; this.nextRow = 40; this.elapsed = 0;
+    this.phase = EMBER; this.phaseMix = 0; this.phaseCd = 0;
+    const d = difficulty(this.endless ? 0 : this.route);
+    this.diff = d;
+    const hs = (this.save.upgrades.headStart | 0) * 0.07;
+    this.dist = (this.state === 'play' && !this.endless) ? d.goal * hs : 0;
+    this.speed = d.baseSpeed; this.nextRow = this.dist + 40; this.elapsed = 0;
     this.coins = 0; this.score = 0; this.rowCount = 0; this.lastGateRow = -10;
-    this.shake = 0; this.flash = 0; this.deadT = 0;
+    this.shake = 0; this.flash = 0; this.deadT = 0; this.virtLevel = this.route;
+    this.shields = this.save.upgrades.shield | 0;
+    this.lives = this.save.upgrades.extraLife | 0;
+    this.invuln = 0;
+    this.coinMul = 1 + 0.5 * (this.save.upgrades.doubleCoins | 0);
+    this.magLv = this.save.upgrades.magnet | 0;
   }
 
-  // ---------------- input ----------------
+  recycleAll() {
+    this.objs.forEach(o => {
+      if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
+      if (o.sprs) { o.sprs.forEach(s => { s.setVisible(false).setActive(false); }); o.sprs = null; }
+    });
+    (this.sprPool || []).forEach(s => { s.setVisible(false).setActive(false); });
+  }
+  getSpr(key) {
+    let s = this.sprPool.find(x => !x.active);
+    if (!s) { s = this.add.image(0, 0, key).setDepth(10); this.sprPool.push(s); }
+    if (s.texture.key !== key && this.textures.exists(key)) s.setTexture(key);
+    s.setActive(true).setVisible(true).setAlpha(1).clearTint();
+    return s;
+  }
+
   setupInput() {
     this.input.addPointer(2);
     this.input.on('pointerdown', p => { Sfx.unlock(); this.sw = { x: p.x, y: p.y, t: performance.now(), done: false }; });
     this.input.on('pointermove', p => {
       if (!this.sw || this.sw.done || !p.isDown) return;
       const dx = p.x - this.sw.x, dy = p.y - this.sw.y;
-      if (Math.hypot(dx, dy) > 50) { this.sw.done = true; this.swipe(dx, dy); }
+      if (this.state === 'play' && Math.hypot(dx, dy) > 50) { this.sw.done = true; this.swipe(dx, dy); }
     });
     this.input.on('pointerup', p => {
       if (!this.sw) return;
       const dx = p.x - this.sw.x, dy = p.y - this.sw.y;
       if (!this.sw.done) {
-        if (Math.hypot(dx, dy) > 30) this.swipe(dx, dy); else this.tap();
+        if (this.state === 'play' && Math.hypot(dx, dy) > 30) this.swipe(dx, dy);
+        else this.tapAt(p.x, p.y);
       }
       this.sw = null;
     });
@@ -128,12 +581,27 @@ class RunScene extends Phaser.Scene {
     kb.on('keydown', e => {
       Sfx.unlock();
       const k = e.code;
-      if (this.state !== 'play') { if (['Space', 'Enter', 'ArrowUp', 'KeyW'].includes(k)) this.tap(); return; }
+      if (this.state === 'map') return this.mapKey(k);
+      if (this.state === 'shop') {
+        if (k === 'Escape' || k === 'Backspace' || k === 'KeyH') this.goHome();
+        else if (k === 'ArrowLeft' || k === 'KeyA' || k === 'KeyQ') { this.shopTab = 'upgrades'; this.hideShopExtras(); this.layoutShop(); }
+        else if (k === 'ArrowRight' || k === 'KeyD' || k === 'KeyE') { this.shopTab = 'costumes'; this.hideShopExtras(); this.layoutShop(); }
+        return;
+      }
+      if (this.state !== 'play') {
+        if (k === 'Escape' || k === 'Backspace' || k === 'KeyH') { if (this.state !== 'home') this.goHome(); return; }
+        if (k === 'KeyM') { this.openMap(); return; }
+        if (k === 'KeyP' && this.state === 'home') { this.startNext(); return; }
+        if (k === 'KeyS' && this.state === 'home') { this.openShop(); return; }
+        if (['Space', 'Enter', 'ArrowUp', 'KeyW'].includes(k)) this.tapAt(VPX, H - 340);
+        return;
+      }
       if (k === 'ArrowLeft' || k === 'KeyA') this.move(-1);
       else if (k === 'ArrowRight' || k === 'KeyD') this.move(1);
       else if (k === 'ArrowUp' || k === 'KeyW') this.jump();
       else if (k === 'ArrowDown' || k === 'KeyS') this.slide();
       else if (k === 'Space' || k === 'ShiftLeft' || k === 'ShiftRight' || k === 'KeyE') this.togglePhase();
+      else if (k === 'Escape') this.openMap();
     });
   }
   swipe(dx, dy) {
@@ -141,59 +609,230 @@ class RunScene extends Phaser.Scene {
     if (Math.abs(dx) > Math.abs(dy)) this.move(dx > 0 ? 1 : -1);
     else if (dy < 0) this.jump(); else this.slide();
   }
-  tap() {
-    if (this.state === 'title') return this.startRun();
-    if (this.state === 'over') { if (this.deadT > 0.7) this.startRun(); return; }
+  tapAt(x, y) {
+    if (this.state === 'home') return this.hitHome(x, y);
+    if (this.state === 'map') return this.hitMap(x, y);
+    if (this.state === 'shop') return this.hitShop(x, y);
+    if (this.state === 'over') {
+      if (this.deadT < 0.7) return;
+      if (y > H - 105) this.goHome();
+      else if (y > H - 170) this.openMap();
+      else this.startRun(this.route, this.endless);
+      return;
+    }
+    if (this.state === 'clear') {
+      if (this.deadT < 0.7) return;
+      if (y > H - 105) this.goHome();
+      else if (y > H - 170) this.openMap();
+      else if (this.route + 1 < LEVEL_COUNT) this.startRun(this.route + 1, false);
+      else this.openMap();
+      return;
+    }
     this.togglePhase();
   }
+  hitHome(x, y) {
+    const hit = (this.uiHits || []).find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+    if (!hit) return;
+    if (hit.kind === 'play') this.startNext();
+    else if (hit.kind === 'map') this.openMap();
+    else if (hit.kind === 'shop') this.openShop();
+  }
+  hitShop(x, y) {
+    const hit = (this.uiHits || []).find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+    if (!hit) return;
+    if (hit.kind === 'back') return this.goHome();
+    if (hit.kind === 'tab') { this.shopTab = hit.tab; this.hideShopExtras(); this.layoutShop(); return; }
+    if (hit.kind === 'buyUp') return this.buyUpgrade(hit.id);
+    if (hit.kind === 'costume') return this.buyOrEquip(hit.id);
+  }
+  buyUpgrade(id) {
+    const u = UPGRADES.find(x => x.id === id); if (!u) return;
+    const lv = this.save.upgrades[id] | 0;
+    if (lv >= u.prices.length) return this.toast('Already maxed');
+    const cost = u.prices[lv];
+    if (this.save.coins < cost) return this.toast('Not enough acorns');
+    this.save.coins -= cost;
+    this.save.upgrades[id] = lv + 1;
+    writeSave(this.save);
+    Sfx.buy();
+    this.toast(u.name + ' is now level ' + (lv + 1));
+    this.hideShopExtras(); this.layoutShop();
+  }
+  buyOrEquip(id) {
+    const c = COSTUMES.find(x => x.id === id); if (!c) return;
+    if (this.save.owned[id]) {
+      this.save.equipped = id; writeSave(this.save); Sfx.lane();
+      this.toast(c.name + ' equipped');
+      this.hideShopExtras(); this.layoutShop(); return;
+    }
+    if (this.save.coins < c.price) return this.toast('Not enough acorns');
+    this.save.coins -= c.price;
+    this.save.owned[id] = true;
+    this.save.equipped = id;
+    writeSave(this.save);
+    Sfx.buy();
+    this.toast(c.name + ' equipped!');
+    this.hideShopExtras(); this.layoutShop();
+  }
+  hitMap(x, y) {
+    const hit = (this.mapHits || []).find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+    if (!hit) return;
+    if (hit.kind === 'season') {
+      const open = this.save.unlocked > hit.s * LEVELS_PER;
+      if (!open) return this.toast('Clear the previous season first');
+      this.viewSeason = hit.s; this.layoutMap(); return;
+    }
+    if (hit.kind === 'level') {
+      if (hit.i >= this.save.unlocked) return this.toast('Clear the previous trail first');
+      this.selLevel = hit.i; this.startRun(hit.i, false); return;
+    }
+    if (hit.kind === 'endless') return this.startRun(Math.min(this.save.cleared, LEVEL_COUNT - 1), true);
+    if (hit.kind === 'back') return this.goHome();
+  }
+  mapKey(k) {
+    if (k === 'Escape' || k === 'Backspace' || k === 'KeyH') return this.goHome();
+    if (k === 'ArrowLeft' || k === 'KeyA') { this.selLevel = Math.max(this.viewSeason * 10, this.selLevel - 1); this.layoutMap(); }
+    else if (k === 'ArrowRight' || k === 'KeyD') { this.selLevel = Math.min(this.viewSeason * 10 + 9, this.selLevel + 1); this.layoutMap(); }
+    else if (k === 'ArrowUp' || k === 'KeyW') { this.selLevel = Math.max(this.viewSeason * 10, this.selLevel - 5); this.layoutMap(); }
+    else if (k === 'ArrowDown' || k === 'KeyS') { this.selLevel = Math.min(this.viewSeason * 10 + 9, this.selLevel + 5); this.layoutMap(); }
+    else if (k === 'KeyQ') { if (this.viewSeason > 0 && this.save.unlocked > (this.viewSeason - 1) * 10) { this.viewSeason--; this.selLevel = this.viewSeason * 10; this.layoutMap(); } }
+    else if (k === 'KeyE') { if (this.viewSeason < 3 && this.save.unlocked > this.viewSeason * 10 + 10) { this.viewSeason++; this.selLevel = this.viewSeason * 10; this.layoutMap(); } }
+    else if (k === 'Space' || k === 'Enter') {
+      if (this.selLevel < this.save.unlocked) this.startRun(this.selLevel, false);
+      else this.toast('Clear the previous trail first');
+    }
+    else if (k === 'KeyN') this.startRun(Math.min(this.save.cleared, LEVEL_COUNT - 1), true);
+  }
+
   move(d) { const n = Phaser.Math.Clamp(this.lane + d, -1, 1); if (n !== this.lane) { this.lane = n; Sfx.lane(); } }
   jump() { if (this.jumpH <= 0.01) { this.jumpV = 980; this.slideT = 0; Sfx.jump(); } }
   slide() { if (this.jumpH > 0) this.jumpV = -1400; this.slideT = 0.62; Sfx.slide(); }
   togglePhase() {
     if (this.phaseCd > 0) return;
     this.phase ^= 1; this.phaseCd = 0.18; Sfx.phase(this.phase);
-    for (let i = 0; i < 18; i++) this.burst(VPX + this.px * LW, PY - 60, PHASE_COL[this.phase], 1);
+    for (let i = 0; i < 18; i++) this.burst(VPX + this.px * LW, PY - 60 - this.jumpH, PHASE_COL[this.phase], 1);
   }
 
-  startRun() {
+  goHome() {
+    this.hideShopExtras();
+    this.state = 'home';
+    this.viewSeason = this.currentSeasonView();
+    this.showHome(true);
     this.resetRun();
-    this.state = 'play';
-    this.showTitle(false); this.showOver(false);
-    this.toast('Shift phases to slip through walls!', 2.2);
   }
-  toast(s, dur = 1.4) { this.toastT.setText(s).setAlpha(1); this.toastDur = dur; }
+  openMap() {
+    this.hideShopExtras();
+    this.state = 'map';
+    this.viewSeason = this.currentSeasonView();
+    this.selLevel = Math.min(Math.max(this.save.cleared, 0), this.save.unlocked - 1, LEVEL_COUNT - 1);
+    this.showMap(true);
+    this.resetRun();
+  }
+  openShop() {
+    this.state = 'shop';
+    this.shopTab = 'upgrades';
+    this.showShop(true);
+    this.resetRun();
+  }
+  startNext() {
+    const i = Math.min(this.save.cleared, LEVEL_COUNT - 1);
+    const idx = i < this.save.unlocked ? i : Math.max(0, this.save.unlocked - 1);
+    this.startRun(idx, false);
+  }
+  startRun(index, endless) {
+    this.hideShopExtras();
+    this.route = index | 0; this.endless = !!endless; this.selLevel = this.route;
+    this.viewSeason = (this.route / LEVELS_PER) | 0;
+    this.state = 'play';
+    this.resetRun();
+    this.hideAll();
+    this.setGroup(this.hudItems(), true);
+    this.hintT.setVisible(true); this.phaseT.setVisible(true);
+    if (this.endless) this.toast('Endless run — how far can you go?', 2.0);
+    else if (this.route < 2) this.toast('Swipe to change lanes, jump and slide!', 2.2);
+    else this.toast('Tap to shift Ember and Frost!', 2.2);
+  }
+  toast(s, dur = 1.4) { this.toastT.setText(s).setAlpha(1).setVisible(true); this.toastDur = dur; }
 
-  // ---------------- spawning ----------------
+  currentDiff() {
+    if (this.endless) {
+      const i = Math.min(LEVEL_COUNT - 1, Math.floor(this.elapsed / 18));
+      const p = Math.min(1, (this.elapsed % 18) / 18);
+      const d = mixDiff(Math.min(i, LEVEL_COUNT - 1), i >= LEVEL_COUNT - 1 ? 1 : p);
+      d.goal = Infinity;
+      return d;
+    }
+    return mixDiff(this.route, this.diff.goal ? this.dist / this.diff.goal : 0);
+  }
+
+  coinLine(lane, z, n, gap) {
+    for (let i = 0; i < n; i++) this.objs.push({ type: 'coin', lane, z: z + i * gap, h: 0 });
+  }
+  coinDiag(l0, l1, z, n, gap) {
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0 : i / (n - 1);
+      this.objs.push({ type: 'coin', lane: l0 + (l1 - l0) * t, z: z + i * gap, h: 0 });
+    }
+  }
+  coinArc(lane, z, n, gap, hMax) {
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0 : i / (n - 1);
+      this.objs.push({ type: 'coin', lane, z: z + i * gap, h: Math.sin(t * Math.PI) * hMax });
+    }
+  }
+
   spawnRow(z) {
     this.rowCount++;
-    const r = Math.random(), e = this.elapsed;
+    const r = Math.random(), d = this.currentDiff();
     const lanes = [-1, 0, 1];
-    if (e > 6 && r < 0.2 && this.rowCount - this.lastGateRow > 3) {
-      // full-width phase gate — the twist
+    const season = SEASONS[d.season || 0];
+    if (d.gateChance > 0 && r < d.gateChance && this.rowCount - this.lastGateRow > d.minGateGap) {
       this.lastGateRow = this.rowCount;
-      const ph = Math.random() < 0.7 ? this.phase : this.phase ^ 1;
-      this.objs.push({ type: 'gate', lane: 0, z, phase: ph });
-      for (let i = 1; i <= 3; i++) this.objs.push({ type: 'coin', lane: this.lane, z: z + i * 6 });
+      const ph = Math.random() < 0.7 ? (this.phase ^ 1) : this.phase;
+      this.objs.push({ type: 'gate', lane: 0, z, phase: ph, visual: ph === EMBER ? 'fire' : 'ice' });
+      this.coinLine(this.lane, z + 5, 4, 6);
       return;
     }
-    if (r > 0.88) { // breather row: coin arc
-      const l = lanes[(Math.random() * 3) | 0];
-      for (let i = 0; i < 5; i++) this.objs.push({ type: 'coin', lane: l, z: z + i * 5, h: Math.sin(i / 4 * Math.PI) * 120 });
+    if (r > 1 - d.breather) {
+      const kind = Math.random();
+      if (kind < 0.4) this.coinLine(lanes[(Math.random() * 3) | 0], z, 6, 5);
+      else if (kind < 0.7) {
+        const a = lanes[(Math.random() * 3) | 0];
+        let b = lanes[(Math.random() * 3) | 0]; if (b === a) b = Phaser.Math.Clamp(a + (Math.random() < 0.5 ? -1 : 1), -1, 1);
+        this.coinDiag(a, b, z, 6, 5);
+      } else this.coinArc(lanes[(Math.random() * 3) | 0], z, 6, 5, 140);
       return;
     }
-    const n = Math.random() < Math.min(0.25 + e * 0.012, 0.65) ? 2 : 1;
+    const n = Math.random() < d.density ? 2 : 1;
     Phaser.Utils.Array.Shuffle(lanes);
+    const placed = [];
     for (let i = 0; i < n; i++) {
       const q = Math.random();
-      let type = q < 0.4 ? 'wall' : q < 0.7 ? 'low' : 'high';
-      const o = { type, lane: lanes[i], z };
-      if (type === 'wall' && e > 14 && Math.random() < 0.4) { o.type = 'pwall'; o.phase = Math.random() < 0.5 ? 0 : 1; }
+      let type, visual, phase;
+      if (q < 0.52) {
+        type = 'low'; visual = season.lows[(Math.random() * season.lows.length) | 0];
+      } else if (q < 0.70) {
+        type = 'high'; visual = 'branch';
+      } else if (q < 0.86 || d.pwallChance <= 0 || Math.random() >= d.pwallChance) {
+        type = 'wall'; visual = (Math.random() < 0.65 ? 'stump' : 'rock');
+      } else {
+        type = 'pwall'; phase = Math.random() < 0.5 ? EMBER : FROST; visual = phase === EMBER ? 'fire' : 'ice';
+      }
+      const o = { type, lane: lanes[i], z, visual, phase };
       this.objs.push(o);
+      placed.push(o);
     }
-    if (Math.random() < 0.6) { const fl = lanes[n]; for (let i = 0; i < 3; i++) this.objs.push({ type: 'coin', lane: fl, z: z + i * 6 }); }
+    const used = new Set(placed.map(o => o.lane));
+    const free = [-1, 0, 1].filter(l => !used.has(l));
+    const lows = placed.filter(o => o.type === 'low');
+    if (lows.length) {
+      this.coinArc(lows[0].lane, z - 4, 5, 5, 130);
+    } else if (free.length) {
+      if (Math.random() < 0.5 && free.length) this.coinLine(free[0], z, 5, 5);
+      else if (placed.length) this.coinDiag(placed[0].lane, free[0] != null ? free[0] : this.lane, z, 5, 5);
+    }
   }
 
-  // ---------------- update ----------------
   update(time, deltaMs) {
     const dt = Math.min(deltaMs / 1000, 0.05);
     this.t += dt;
@@ -202,83 +841,159 @@ class RunScene extends Phaser.Scene {
     let spd = 0;
     if (this.state === 'play') {
       this.elapsed += dt;
-      this.speed = Math.min(46 + this.elapsed * 1.25, 125);
+      const d = this.currentDiff();
+      this.diffNow = d;
+      this.speed = d.baseSpeed;
       spd = this.speed;
       this.phaseCd -= dt;
-      // speed-up callouts
-      const lvl = Math.floor(this.elapsed / 20);
-      if (lvl > (this.lvl || 0)) { this.lvl = lvl; this.toast('SPEED UP!  x' + (1 + lvl * 0.5).toFixed(1)); }
-    } else if (this.state === 'title') spd = 22;
+      if (this.invuln > 0) this.invuln -= dt;
+    } else if (this.state === 'home' || this.state === 'map' || this.state === 'shop') spd = 18;
     else { this.deadT += dt; spd = 0; }
-    if (this.state !== 'play') this.lvl = 0;
 
     this.dist += spd * dt;
     this.phaseMix = lerp(this.phaseMix, this.phase, Math.min(dt * 8, 1));
     this.px = lerp(this.px, this.lane, Math.min(dt * 16, 1));
-    if (this.jumpH > 0 || this.jumpV > 0) { this.jumpV -= 2700 * dt; this.jumpH = Math.max(0, this.jumpH + this.jumpV * dt); if (this.jumpH === 0) this.jumpV = 0; }
+    if (this.jumpH > 0 || this.jumpV > 0) {
+      this.jumpV -= 2700 * dt;
+      this.jumpH = Math.max(0, this.jumpH + this.jumpV * dt);
+      if (this.jumpH === 0) this.jumpV = 0;
+    }
     if (this.slideT > 0) this.slideT -= dt;
 
     if (this.state === 'play') {
       while (this.dist >= this.nextRow) {
         this.spawnRow(SPAWNZ - (this.dist - this.nextRow));
-        const gapT = Math.max(0.52, 1.05 - this.elapsed * 0.006);
-        this.nextRow += Math.max(this.speed * gapT, 30);
+        const gapT = this.currentDiff().gapT;
+        this.nextRow += Math.max(this.speed * gapT, 26);
       }
-      this.score = Math.floor(this.dist) + this.coins * 25;
-      const pl = Math.round(this.px);
+      const magR = this.magLv ? (0.4 + 0.45 * this.magLv) : 0;
       for (const o of this.objs) {
         const pz = o.z; o.z -= spd * dt;
         if (o.dead) continue;
         if (o.type === 'coin') {
-          if (pz > 1.5 && o.z <= 1.5 && o.lane === pl && Math.abs((o.h || 0) - this.jumpH) < 110) {
+          if (this.magLv && o.z < 30 && o.z > -2) {
+            const dl = this.px - o.lane;
+            if (Math.abs(dl) < magR) o.lane += dl * Math.min(1, dt * (2.2 + this.magLv));
+          }
+          const closeLane = Math.abs(o.lane - this.px) < (this.magLv ? 0.55 : 0.45);
+          if (pz > 1.5 && o.z <= 1.5 && closeLane && Math.abs((o.h || 0) - this.jumpH) < 110) {
             o.dead = true; this.coins++; Sfx.coin();
-            const p = proj(o.lane, 0, (o.h || 0) + 40); for (let i = 0; i < 8; i++) this.burst(p.x, p.y, 0xffe066, 0.7);
+            const p = proj(o.lane, 0, (o.h || 0) + 40); for (let k = 0; k < 8; k++) this.burst(p.x, p.y, 0xffe066, 0.7);
           }
         } else if (pz > 0 && o.z <= 0) {
-          if (this.collides(o, pl)) { this.die(o); break; }
+          if (this.invuln <= 0 && this.collides(o, Math.round(this.px))) {
+            this.onHit(o);
+            if (this.state !== 'play') break;
+          }
         }
       }
       this.score = Math.floor(this.dist) + this.coins * 25;
       this.scoreT.setText(String(this.score));
-      this.coinT.setText('★ ' + this.coins);
-      this.phaseT.setText((this.phase ? '☾ ' : '☀ ') + PAL[this.phase].name).setColor(this.phase ? '#7ff0ff' : '#ffc06b');
+      this.coinT.setText('🌰 ' + this.coins + (this.coinMul > 1 ? ('  ×' + this.coinMul.toFixed(1)) : ''));
+      this.phaseT.setText((this.phase ? '❄  ' : '🔥  ') + PHASE_NAME[this.phase]).setColor(this.phase ? '#9ee8ff' : '#ffb06a');
+      const sh = this.shields, lv = this.lives;
+      this.livesT.setText((sh ? ('🛡 ' + sh + '   ') : '') + (lv ? ('❤ ' + lv) : ''));
+      if (this.endless) this.routeT.setText('ENDLESS');
+      else this.routeT.setText(SEASONS[this.diff.season].short + '  ' + this.diff.stage + '/10');
+      if (!this.endless && this.dist >= this.diff.goal && this.state === 'play') this.win();
     } else {
       for (const o of this.objs) o.z -= spd * dt;
     }
-    this.objs = this.objs.filter(o => o.z > -12 && !(o.dead && o.type === 'coin'));
+    this.objs = this.objs.filter(o => {
+      const keep = o.z > -14 && !(o.dead && o.type === 'coin');
+      if (!keep) {
+        if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
+        if (o.sprs) { o.sprs.forEach(s => { s.setVisible(false).setActive(false); }); o.sprs = null; }
+      }
+      return keep;
+    });
 
-    // particles
     for (const p of this.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }
     this.particles = this.particles.filter(p => p.life > 0);
+    this.updateWeather(dt, spd);
     this.shake = Math.max(0, this.shake - dt * 2); this.flash = Math.max(0, this.flash - dt * 2.5);
     this.cameras.main.setScroll((Math.random() - 0.5) * 30 * this.shake, (Math.random() - 0.5) * 30 * this.shake);
 
-    if (this.state === 'title') { this.startT.setAlpha(0.55 + 0.45 * Math.sin(this.t * 4)); this.titleT.y = 200 + Math.sin(this.t * 2) * 6; }
-    if (this.state === 'over') this.retryT.setAlpha(this.deadT > 0.7 ? 0.55 + 0.45 * Math.sin(this.t * 4) : 0);
+    if (this.state === 'home') this.playT.setAlpha(0.8 + 0.2 * Math.sin(this.t * 4));
+    if (this.state === 'over') this.retryT.setAlpha(this.deadT > 0.35 ? 0.7 + 0.3 * Math.sin(this.t * 4) : Math.max(0, this.deadT / 0.35));
+    if (this.state === 'clear') this.nextT.setAlpha(this.deadT > 0.35 ? 0.7 + 0.3 * Math.sin(this.t * 4) : Math.max(0, this.deadT / 0.35));
 
     this.draw();
   }
 
+  onHit(o) {
+    if (this.shields > 0) {
+      this.shields--; this.invuln = 1.15; this.flash = 0.45;
+      Sfx.hit();
+      if (o) o.dead = true;
+      this.toast('Shield broke!', 1.0);
+      for (let i = 0; i < 16; i++) this.burst(VPX + this.px * LW, PY - 60, 0x7ad7ff, 1);
+      return;
+    }
+    if (this.lives > 0) {
+      this.lives--; this.invuln = 1.4; this.flash = 0.5; this.shake = 0.5;
+      Sfx.hit();
+      this.toast('Extra life!', 1.0);
+      for (let i = 0; i < 16; i++) this.burst(VPX + this.px * LW, PY - 60, 0xff8a8a, 1);
+      return;
+    }
+    this.die();
+  }
+
   collides(o, pl) {
-    if (o.type === 'gate') return o.phase === this.phase;
-    if (o.lane !== pl) return false;
+    if (o.type === 'gate') return o.phase !== this.phase;
+    if (Math.abs((o.lane || 0) - pl) > 0.45 && o.type !== 'gate') return false;
     if (o.type === 'wall') return true;
-    if (o.type === 'pwall') return o.phase === this.phase;
+    if (o.type === 'pwall') return o.phase !== this.phase;
     if (o.type === 'low') return this.jumpH < 55;
     if (o.type === 'high') return this.slideT <= 0;
     return false;
   }
 
+  bankCoins() {
+    const add = Math.round(this.coins * this.coinMul);
+    this.save.coins += add;
+    return add;
+  }
+  recordScore() {
+    const nb = this.score > this.save.best;
+    if (nb) this.save.best = this.score;
+    const key = this.endless ? 'endless' : String(this.route);
+    if (!this.save.levelBest[key] || this.score > this.save.levelBest[key]) this.save.levelBest[key] = this.score;
+    this.best = this.save.best;
+    writeSave(this.save);
+    return nb;
+  }
   die() {
     this.state = 'over'; this.deadT = 0; this.shake = 1; this.flash = 1;
+    this.toastDur = 0; this.toastT.setAlpha(0);
+    this.score = Math.floor(this.dist) + this.coins * 25;
     Sfx.hit();
     for (let i = 0; i < 30; i++) this.burst(VPX + this.px * LW, PY - 60, i % 2 ? 0xff8a3d : 0xffffff, 1.4);
-    const nb = this.score > this.best;
-    if (nb) { this.best = this.score; saveBest(this.best); }
-    this.finalT.setText('SCORE  ' + this.score + '\n★ ' + this.coins + ' stamps\nBEST  ' + this.best);
+    const banked = this.bankCoins();
+    const nb = this.recordScore();
+    const tag = this.endless ? 'ENDLESS' : (SEASONS[this.diff.season].short + '  ' + this.diff.stage + '/10');
+    this.finalT.setText(tag + '\nSCORE  ' + this.score + '\n' + banked + ' acorns banked\nBEST  ' + this.save.best);
     this.showOver(true); this.newBestT.setVisible(nb);
     this.hintT.setVisible(false); this.phaseT.setVisible(false);
     this.scoreT.setText(String(this.score));
+  }
+  win() {
+    this.state = 'clear'; this.deadT = 0;
+    this.toastDur = 0; this.toastT.setAlpha(0);
+    this.score = Math.floor(this.dist) + this.coins * 25;
+    Sfx.win();
+    for (let i = 0; i < 24; i++) this.burst(VPX + this.px * LW, PY - 80, i % 2 ? 0x7CF7A0 : 0xffe066, 1.2);
+    if (this.route + 1 > this.save.cleared) this.save.cleared = this.route + 1;
+    if (this.save.unlocked < this.route + 2) this.save.unlocked = Math.min(LEVEL_COUNT, this.route + 2);
+    const banked = this.bankCoins();
+    const nb = this.recordScore();
+    const last = this.route >= LEVEL_COUNT - 1;
+    this.clearT.setText(last ? 'ALL 40\nTRAILS!' : 'TRAIL\nCLEAR!');
+    this.clearSubT.setText(SEASONS[this.diff.season].name + '  ' + this.diff.stage + '/10\nSCORE  ' + this.score + '\n' + banked + ' acorns banked');
+    this.nextT.setText(last ? 'ALL TRAILS' : 'NEXT TRAIL');
+    this.showClear(true); this.newBestT.setVisible(nb).setY(700);
+    this.hintT.setVisible(false); this.phaseT.setVisible(false);
   }
 
   burst(x, y, col, f) {
@@ -286,192 +1001,295 @@ class RunScene extends Phaser.Scene {
     this.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 200, life: 0.5 + Math.random() * 0.4, col, r: 3 + Math.random() * 5 });
   }
 
-  // ---------------- drawing ----------------
+  seedWeather(n) {
+    this.weather = [];
+    for (let i = 0; i < n; i++) this.weather.push(this.makeW());
+  }
+  makeW() {
+    return { x: Math.random() * W, y: Math.random() * H, z: Math.random(), sp: 40 + Math.random() * 90, rot: Math.random() * 6, rs: (Math.random() - 0.5) * 3, sc: 0.3 + Math.random() * 0.7 };
+  }
+  updateWeather(dt, spd) {
+    const kind = SEASONS[this.seasonIndex()].weather;
+    const wind = (this.px || 0) * 20 + Math.sin(this.t) * 10;
+    for (const w of this.weather) {
+      const fall = kind === 'snow' ? w.sp * 0.55 : w.sp;
+      w.y += fall * dt * (0.7 + spd / 80);
+      w.x += (wind + (kind === 'petal' ? Math.sin(this.t * 2 + w.rot) * 30 : 16)) * dt;
+      w.rot += w.rs * dt;
+      if (w.y > H + 30 || w.x < -40 || w.x > W + 40) {
+        w.y = -20; w.x = Math.random() * W; w.z = Math.random();
+      }
+    }
+  }
+
+  playerKey() {
+    const sliding = this.slideT > 0 && this.jumpH <= 0.01;
+    const jumping = this.jumpH > 20;
+    const costume = this.save.equipped || 'classic';
+    if (this.phase === FROST) {
+      if (sliding) return 'nova-frost-slide';
+      if (jumping) return 'nova-frost-jump';
+      return 'nova-frost-run1';
+    }
+    if (sliding) return 'nova-ember-slide';
+    if (jumping) return 'nova-ember-jump';
+    if (costume !== 'classic' && this.textures.exists('nova-costume-' + costume)) return 'nova-costume-' + costume;
+    return (Math.floor(this.t * 9) % 2 === 0) ? 'nova-ember-run1' : 'nova-ember-run2';
+  }
+
   draw() {
-    const m = this.phaseMix, A = PAL[0], B = PAL[1];
-    const bg = this.bgG, g = this.g;
-    bg.clear(); g.clear();
-    const top = lerpColor(A.skyTop, B.skyTop, m), bot = lerpColor(A.skyBot, B.skyBot, m);
-    bg.fillGradientStyle(top, top, bot, bot, 1); bg.fillRect(-40, -40, W + 80, HY + 60);
-    // space floor below horizon
-    bg.fillStyle(lerpColor(0x1a0a2e, 0x030817, m), 1); bg.fillRect(-40, HY + 18, W + 80, H);
-    // stars
-    for (const s of this.stars) { bg.fillStyle(0xffffff, (0.35 + 0.65 * Math.abs(Math.sin(this.t * 1.5 + s.tw))) * (0.35 + m * 0.65)); bg.fillCircle(s.x, s.y, s.r); }
-    // sun / moon body that morphs with phase
-    const cx = 540, cy = HY - 180;
-    bg.fillStyle(lerpColor(0xffd166, 0xe9f6ff, m), 0.18); bg.fillCircle(cx, cy, 140);
-    bg.fillStyle(lerpColor(0xffb347, 0xdff3ff, m), 1); bg.fillCircle(cx, cy, 95);
-    bg.fillStyle(top, m); bg.fillCircle(cx + 45, cy - 25, 88 * m + 0.01);
-    // ringed planet
-    bg.fillStyle(lerpColor(0x7a3cff, 0x2d6cdf, m), 1); bg.fillCircle(150, HY - 110, 55);
-    bg.lineStyle(7, lerpColor(0xffc6e0, 0x9ef3ff, m), 0.9); bg.strokeEllipse(150, HY - 110, 190, 40);
-    bg.fillStyle(lerpColor(0x7a3cff, 0x2d6cdf, m), 1); bg.fillRect(95, HY - 145, 110, 32); bg.fillCircle(150, HY - 130, 50);
-    // floating asteroid silhouettes near horizon
-    bg.fillStyle(lerpColor(0x3d1a55, 0x0b1a3a, m), 1);
-    for (let i = 0; i < 7; i++) { const x = ((i * 137 + this.dist * 0.6) % (W + 200)) - 100; bg.fillEllipse(x, HY + 10 - (i % 3) * 8, 90 + (i % 3) * 40, 26); }
+    this.fitBackdrop();
+    this.drawRoad();
+    const g = this.g; g.clear();
 
-    // road (sky-highway made of light)
-    const road = lerpColor(A.road, B.road, m), edge = lerpColor(A.edge, B.edge, m), acc = lerpColor(A.accent, B.accent, m);
-    const f1 = proj(-1.5, SPAWNZ + 20), f2 = proj(1.5, SPAWNZ + 20), n1 = proj(-1.5, -10), n2 = proj(1.5, -10);
-    g.fillStyle(road, 1); g.fillPoints([f1, f2, n2, n1], true);
-    // cross tiles for speed sense
-    const off = this.dist % 12;
-    for (let z = SPAWNZ + 12 - off; z > -10; z -= 12) {
-      const a = proj(-1.5, z), b = proj(1.5, z);
-      g.lineStyle(Math.max(1, 3 * a.s), acc, 0.25 * Math.min(1, a.s * 3)); g.lineBetween(a.x, a.y, b.x, b.y);
+    // lane dashes and edges
+    const acc = SEASONS[this.seasonIndex()].accent;
+    for (const ln of [-0.5, 0.5]) {
+      for (let z = SPAWNZ - (this.dist % 16); z > -10; z -= 16) {
+        const a = proj(ln, z), b = proj(ln, z - 7);
+        g.lineStyle(Math.max(1.2, 7 * b.s), 0xffffff, 0.32 * Math.min(1, a.s * 3));
+        g.lineBetween(a.x, a.y, b.x, b.y);
+      }
     }
-    // lane dashes
-    for (const ln of [-0.5, 0.5]) for (let z = SPAWNZ - (this.dist % 16); z > -10; z -= 16) {
-      const a = proj(ln, z), b = proj(ln, z - 7);
-      g.lineStyle(Math.max(1.5, 8 * b.s), 0xffffff, 0.35 * Math.min(1, a.s * 3)); g.lineBetween(a.x, a.y, b.x, b.y);
-    }
-    // glowing rails
-    for (const side of [-1.5, 1.5]) {
-      const a = proj(side, SPAWNZ + 20), b = proj(side, -10);
-      g.lineStyle(18, edge, 0.25); g.lineBetween(a.x, a.y, b.x, b.y);
-      g.lineStyle(6, edge, 1); g.lineBetween(a.x, a.y, b.x, b.y);
+    for (const side of [-1.62, 1.62]) {
+      const a = proj(side, SPAWNZ + 10), b = proj(side, -8);
+      g.lineStyle(10, acc, 0.18); g.lineBetween(a.x, a.y, b.x, b.y);
+      g.lineStyle(3, acc, 0.7); g.lineBetween(a.x, a.y, b.x, b.y);
     }
 
-    // objects far to near, player interleaved
+    // finish line
+    if (this.state === 'play' && !this.endless && this.diff.goal - this.dist < 80 && this.diff.goal - this.dist > 0) {
+      const z = this.diff.goal - this.dist;
+      const a = proj(-1.55, z), b = proj(1.55, z);
+      g.lineStyle(10 * a.s, 0x7CF7A0, 0.9); g.lineBetween(a.x, a.y, b.x, b.y);
+    }
+
+    // objects far-to-near
     const list = this.objs.filter(o => !o.dead).sort((a, b) => b.z - a.z);
     let playerDrawn = false;
     for (const o of list) {
-      if (!playerDrawn && o.z < 0) { this.drawPlayer(g); playerDrawn = true; }
-      this.drawObj(g, o);
+      if (!playerDrawn && o.z < 0) { this.placePlayer(); playerDrawn = true; }
+      this.placeObj(o);
     }
-    if (!playerDrawn) this.drawPlayer(g);
+    if (!playerDrawn) this.placePlayer();
+    // hide unused pooled sprites
+    const used = new Set(list.map(o => o.spr).filter(Boolean));
+    for (const s of this.sprPool) if (s.active && !used.has(s) && s !== this.playerSpr) { /* kept if attached */ }
 
-    // particles + flash
     const fx = this.fxG; fx.clear();
+    // weather
+    this.drawWeather(fx);
     for (const p of this.particles) { fx.fillStyle(p.col, Math.min(1, p.life * 2)); fx.fillCircle(p.x, p.y, p.r); }
-    if (this.flash > 0) { fx.fillStyle(0xffffff, this.flash * 0.6); fx.fillRect(-40, -40, W + 80, H + 80); }
-    // phase pill
+    if (this.flash > 0) { fx.fillStyle(0xffffff, this.flash * 0.55); fx.fillRect(-40, -40, W + 80, H + 80); }
     if (this.state === 'play') {
-      fx.fillStyle(0x000000, 0.35); fx.fillRoundedRect(VPX - 130, H - 100, 260, 60, 30);
-      fx.lineStyle(3, PHASE_COL[this.phase], 1); fx.strokeRoundedRect(VPX - 130, H - 100, 260, 60, 30);
-    }
-    if (this.state === 'title') { fx.fillStyle(0x0b0620, 0.55); fx.fillRoundedRect(40, HY + 120, W - 80, 260, 28); }
-    if (this.state === 'over' || this.state === 'title') { fx.fillStyle(0x0b0620, this.state === 'over' ? Math.min(0.6, this.deadT) : 0.35); fx.fillRect(-40, -40, W + 80, H + 80); }
-  }
-
-  drawObj(g, o) {
-    const fade = Math.min(1, (SPAWNZ + 5 - o.z) / 25);
-    if (o.type === 'coin') {
-      const p = proj(o.lane, o.z, (o.h || 0) + 50), r = 26 * p.s, sx = Math.abs(Math.cos(this.t * 5 + o.z * 0.2));
-      g.fillStyle(0xffe066, 0.25 * fade); g.fillCircle(p.x, p.y, r * 1.6);
-      this.star(g, p.x, p.y, r, r * 0.45, Math.max(sx, 0.15), 0xffd23f, fade);
-      this.star(g, p.x, p.y, r * 0.55, r * 0.25, Math.max(sx, 0.15), 0xfff5c0, fade);
-      return;
-    }
-    const b = proj(o.lane, o.z), s = b.s, hw = LW * 0.42 * s;
-    if (o.type === 'wall') { // drifting space rock
-      const h = 210 * s;
-      g.fillStyle(0x000000, 0.3 * fade); g.fillEllipse(b.x, b.y, hw * 2.2, 24 * s);
-      g.fillStyle(0x6b5a7e, fade);
-      g.fillPoints([{ x: b.x - hw, y: b.y }, { x: b.x - hw * 1.05, y: b.y - h * 0.55 }, { x: b.x - hw * 0.6, y: b.y - h }, { x: b.x + hw * 0.5, y: b.y - h * 0.95 }, { x: b.x + hw * 1.05, y: b.y - h * 0.5 }, { x: b.x + hw, y: b.y }], true);
-      g.fillStyle(0x8d7aa3, fade); g.fillPoints([{ x: b.x - hw * 0.9, y: b.y - h * 0.55 }, { x: b.x - hw * 0.55, y: b.y - h * 0.95 }, { x: b.x + hw * 0.45, y: b.y - h * 0.9 }, { x: b.x, y: b.y - h * 0.6 }], true);
-      g.fillStyle(0x4a3c5c, fade); g.fillCircle(b.x - hw * 0.35, b.y - h * 0.35, 18 * s); g.fillCircle(b.x + hw * 0.45, b.y - h * 0.25, 12 * s); g.fillCircle(b.x + hw * 0.1, b.y - h * 0.7, 10 * s);
-    } else if (o.type === 'low') { // energy hurdle: jump
-      const h = 70 * s;
-      g.fillStyle(0x000000, 0.3 * fade); g.fillEllipse(b.x, b.y, hw * 2.2, 18 * s);
-      g.fillStyle(0x3a3a55, fade); g.fillRect(b.x - hw, b.y - h, 10 * s, h); g.fillRect(b.x + hw - 10 * s, b.y - h, 10 * s, h);
-      g.fillStyle(0xff4d6d, fade); g.fillRect(b.x - hw, b.y - h, hw * 2, 26 * s);
-      g.fillStyle(0xffffff, fade); for (let i = 0; i < 4; i++) g.fillRect(b.x - hw + (i * 2 + 0.5) * hw / 4, b.y - h, hw / 4, 26 * s);
-      g.fillStyle(0xff4d6d, 0.25 * fade * (0.6 + 0.4 * Math.sin(this.t * 10))); g.fillRect(b.x - hw, b.y - h + 26 * s, hw * 2, h - 26 * s);
-    } else if (o.type === 'high') { // laser bar: slide under
-      const y1 = 120 * s, y2 = 230 * s;
-      g.fillStyle(0x3a3a55, fade); g.fillRect(b.x - hw, b.y - y2, 12 * s, y2); g.fillRect(b.x + hw - 12 * s, b.y - y2, 12 * s, y2);
-      g.fillStyle(0x66ff99, 0.3 * fade); g.fillRect(b.x - hw, b.y - y2, hw * 2, y2 - y1);
-      g.lineStyle(10 * s, 0x66ff99, fade); g.lineBetween(b.x - hw, b.y - y1, b.x + hw, b.y - y1); g.lineBetween(b.x - hw, b.y - y2, b.x + hw, b.y - y2);
-      g.lineStyle(4 * s, 0xffffff, fade); g.lineBetween(b.x - hw, b.y - y1, b.x + hw, b.y - y1);
-    } else if (o.type === 'gate' || o.type === 'pwall') {
-      const solid = o.phase === this.phase, col = PHASE_COL[o.phase];
-      const L = o.type === 'gate' ? proj(-1.5, o.z) : proj(o.lane - 0.42, o.z), R = o.type === 'gate' ? proj(1.5, o.z) : proj(o.lane + 0.42, o.z);
-      const h = 260 * s, x1 = L.x, x2 = R.x, w = x2 - x1;
-      if (solid) {
-        g.fillStyle(col, 0.82 * fade); g.fillRect(x1, b.y - h, w, h);
-        g.fillStyle(0xffffff, 0.18 * fade);
-        for (let i = 0; i < 6; i++) { const yy = b.y - h + ((i * h / 6 + this.t * 80 * s) % h); g.fillRect(x1, yy, w, 6 * s); }
-        g.lineStyle(6 * s, 0xffffff, fade); g.strokeRect(x1, b.y - h, w, h);
-      } else {
-        g.lineStyle(4 * s, col, 0.45 * fade);
-        for (let x = x1; x < x2; x += 30 * s) g.lineBetween(x, b.y - h, Math.min(x + 15 * s, x2), b.y - h);
-        for (let x = x1; x < x2; x += 30 * s) g.lineBetween(x, b.y, Math.min(x + 15 * s, x2), b.y);
-        g.lineBetween(x1, b.y - h, x1, b.y); g.lineBetween(x2, b.y - h, x2, b.y);
-        g.fillStyle(col, 0.08 * fade); g.fillRect(x1, b.y - h, w, h);
+      if (this.shields > 0 || this.invuln > 0) {
+        const x = VPX + this.px * LW, y = PY - 70 - this.jumpH;
+        fx.lineStyle(4, this.invuln > 0 ? 0xffffff : 0x7ad7ff, 0.55 + 0.35 * Math.sin(this.t * 8));
+        fx.strokeEllipse(x, y, 160, 200);
       }
-      // phase emblem
-      const ex = b.x + (o.type === 'gate' ? 0 : 0), ey = b.y - h * 0.55, er = 30 * s;
-      if (o.phase === SOLAR) this.sun(g, ex, ey, er, solid ? 0xffffff : col, solid ? fade : 0.5 * fade);
-      else this.moon(g, ex, ey, er, solid ? 0xffffff : col, solid ? fade : 0.5 * fade, solid ? col : lerpColor(PAL[0].road, PAL[1].road, this.phaseMix));
+      fx.fillStyle(0x000000, 0.4); fx.fillRoundedRect(VPX - 130, H - 100, 260, 60, 30);
+      fx.lineStyle(3, PHASE_COL[this.phase], 1); fx.strokeRoundedRect(VPX - 130, H - 100, 260, 60, 30);
+      if (!this.endless) {
+        const p = Math.max(0, Math.min(1, this.dist / this.diff.goal));
+        fx.fillStyle(0x000000, 0.4); fx.fillRoundedRect(40, 96, W - 80, 14, 7);
+        fx.fillStyle(0x7CF7A0, 1); fx.fillRoundedRect(40, 96, (W - 80) * p, 14, 7);
+      }
+    }
+    if (this.state === 'home' || this.state === 'shop' || this.state === 'map' || this.state === 'over' || this.state === 'clear') {
+      const a = (this.state === 'over' || this.state === 'clear') ? Math.min(0.62, 0.38 + this.deadT * 0.5) : (this.state === 'shop' || this.state === 'map' ? 0.42 : 0.28);
+      fx.fillStyle(0x0b1208, a);
+      fx.fillRect(-40, -40, W + 80, H + 80);
+    }
+    if ((this.state === 'over' || this.state === 'clear') && this.deadT > 0.2) {
+      const ug = this.uiG;
+      ug.fillStyle(0xffc14d, 0.95);
+      ug.fillRoundedRect(VPX - 200, H - 258, 400, 76, 38);
+      ug.fillStyle(0x2d5a27, 0.95);
+      ug.fillRoundedRect(VPX - 120, H - 165, 240, 52, 26);
+      ug.fillStyle(0x1a140c, 0.7);
+      ug.fillRoundedRect(VPX - 90, H - 100, 180, 44, 22);
+      const gy = this.state === 'clear' ? this.nextT : this.retryT;
+      gy.setColor('#1a140c').setStroke('#000000', 0).setDepth(12);
+      this.toMapT.setColor('#ffffff').setDepth(12);
+      this.toHomeT.setColor('#ffffff').setDepth(12);
     }
   }
 
-  star(g, x, y, R, r, sx, col, a) {
-    const pts = [];
-    for (let i = 0; i < 10; i++) { const ang = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r : R; pts.push({ x: x + Math.cos(ang) * rr * sx, y: y + Math.sin(ang) * rr }); }
-    g.fillStyle(col, a); g.fillPoints(pts, true);
-  }
-  sun(g, x, y, r, col, a) {
-    g.fillStyle(col, a); g.fillCircle(x, y, r * 0.6);
-    g.lineStyle(Math.max(2, r * 0.15), col, a);
-    for (let i = 0; i < 8; i++) { const an = i * Math.PI / 4; g.lineBetween(x + Math.cos(an) * r * 0.8, y + Math.sin(an) * r * 0.8, x + Math.cos(an) * r * 1.15, y + Math.sin(an) * r * 1.15); }
-  }
-  moon(g, x, y, r, col, a, cut) {
-    g.fillStyle(col, a); g.fillCircle(x, y, r);
-    g.fillStyle(cut, 1); g.fillCircle(x + r * 0.45, y - r * 0.25, r * 0.85);
+  drawRoad() {
+    const ctx = this.roadCtx;
+    ctx.clearRect(0, 0, W, H);
+    const img = this.groundImgs[this.seasonIndex()];
+    if (!img) { this.roadTex.refresh(); return; }
+    const tw = img.width, th = img.height;
+    const off = this.dist * 0.55;
+    const yStart = Math.max(0, HY - 4);
+    for (let y = yStart; y < H; y++) {
+      const rel = (y - HY) / (PY - HY);
+      if (rel <= 0.002) continue;
+      const s = rel;
+      const z = D / s - D;
+      const shHalf = 2.2 * LW * s;
+      const rdHalf = 1.62 * LW * s;
+      let ty = (off + z * 8.8) % th;
+      if (ty < 0) ty += th;
+      const sy = Math.min(th - 1, ty | 0);
+      const fade = Math.min(1, rel * 2.8);
+      ctx.globalAlpha = fade * 0.8;
+      try { ctx.drawImage(img, 0, sy, tw, 1, VPX - shHalf, y, shHalf * 2, 1.5); } catch (e) {}
+      ctx.globalAlpha = fade;
+      try { ctx.drawImage(img, 0, sy, tw, 1, VPX - rdHalf, y, rdHalf * 2, 1.5); } catch (e) {}
+    }
+    ctx.globalAlpha = 1;
+    const grd = ctx.createLinearGradient(0, HY - 8, 0, HY + 110);
+    grd.addColorStop(0, 'rgba(0,0,0,1)');
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, HY + 110);
+    ctx.globalCompositeOperation = 'source-over';
+    this.roadTex.refresh();
   }
 
-  // Nova: a round little comet-fox courier with a starmail satchel
-  drawPlayer(g) {
-    if (this.state === 'over' && this.deadT > 0.05) { // tumble
-    }
+  placePlayer() {
     const x = VPX + this.px * LW, ground = PY, j = this.jumpH;
     const sliding = this.slideT > 0 && j <= 0.01;
-    const run = this.state === 'play' || this.state === 'title' ? this.t * 16 : 0;
-    const col = PHASE_COL[this.phase];
-    // shadow
-    g.fillStyle(0x000000, 0.35 * Math.max(0.3, 1 - j / 300)); g.fillEllipse(x, ground, 110 * Math.max(0.5, 1 - j / 400), 26);
-    // comet trail
-    const tilt = (this.lane - this.px) * 0.6;
-    for (let i = 0; i < 6; i++) {
-      g.fillStyle(col, 0.18 - i * 0.025); g.fillCircle(x - tilt * 60 * i * 0.2, ground - (sliding ? 30 : 60) - j + i * 22, 40 - i * 5);
+    const key = this.playerKey();
+    if (this.playerSpr.texture.key !== key && this.textures.exists(key)) this.playerSpr.setTexture(key);
+    const bob = (j > 0 || sliding) ? 0 : Math.abs(Math.sin(this.t * 16)) * 6;
+    const ratio = this.playerSpr.width / Math.max(1, this.playerSpr.height);
+    if (this.state === 'home') {
+      this.playerSpr.setVisible(true);
+      this.playerSpr.setPosition(VPX, Math.round(H * 0.58));
+      this.playerSpr.setDisplaySize(200 * ratio, 200);
+      this.playerSpr.setAlpha(1);
+    } else if (this.state === 'play') {
+      this.playerSpr.setVisible(true);
+      this.playerSpr.setPosition(x, ground - j - bob);
+      const h = sliding ? 150 : 250;
+      this.playerSpr.setDisplaySize(h * ratio, h);
+      this.playerSpr.setAlpha(this.invuln > 0 ? (0.5 + 0.5 * Math.sin(this.t * 20)) : 1);
+    } else {
+      this.playerSpr.setVisible(false);
     }
-    if (sliding) {
-      const by = ground - 34;
-      g.fillStyle(0xff8a3d, 1); g.fillEllipse(x, by, 120, 60);
-      g.fillStyle(0xfff1e0, 1); g.fillEllipse(x, by + 10, 70, 30);
-      g.fillStyle(0x1b2a4a, 1); g.fillEllipse(x, by - 8, 70, 26);
-      g.fillStyle(0x9ef3ff, 1); g.fillEllipse(x - 12, by - 12, 22, 8);
-      g.fillStyle(0xff8a3d, 1); g.fillTriangle(x - 50, by - 20, x - 34, by - 50, x - 22, by - 24); g.fillTriangle(x + 50, by - 20, x + 34, by - 50, x + 22, by - 24);
+    this.playerSpr.setDepth(15);
+    if (this.state === 'play' || this.state === 'home') {
+      const shx = this.state === 'home' ? VPX : x;
+      const shy = this.state === 'home' ? Math.round(H * 0.58) + 8 : ground + 6;
+      const sh = this.g;
+      sh.fillStyle(0x000000, this.state === 'home' ? 0.28 : 0.32 * Math.max(0.25, 1 - j / 300));
+      sh.fillEllipse(shx, shy, this.state === 'home' ? 90 : 120 * Math.max(0.5, 1 - j / 400), 22);
+    }
+  }
+
+  placeObj(o) {
+    if (this.state !== 'play') {
+      if (o.spr) o.spr.setVisible(false);
+      if (o.sprs) o.sprs.forEach(s => s.setVisible(false));
       return;
     }
-    const bob = j > 0 ? 0 : Math.abs(Math.sin(run)) * 8;
-    const by = ground - 70 - j - bob;
-    // legs
-    const l1 = Math.sin(run) * 16, l2 = -l1;
-    g.fillStyle(0x3b1f4f, 1);
-    g.fillRoundedRect(x - 26 + (j > 0 ? -6 : 0), by + 30 + Math.max(0, l1 * 0.6), 18, 34 - Math.max(0, l1 * 0.6), 8);
-    g.fillRoundedRect(x + 8 + (j > 0 ? 6 : 0), by + 30 + Math.max(0, l2 * 0.6), 18, 34 - Math.max(0, l2 * 0.6), 8);
-    // tail (bushy comet tail)
-    g.fillStyle(0xff8a3d, 1); g.fillEllipse(x + 48, by + 22 + Math.sin(run) * 4, 40, 28);
-    g.fillStyle(0xfff1e0, 1); g.fillCircle(x + 64, by + 18 + Math.sin(run) * 4, 10);
-    // body
-    g.fillStyle(0xff8a3d, 1); g.fillCircle(x, by, 50);
-    g.fillStyle(0xfff1e0, 1); g.fillEllipse(x, by + 22, 56, 40);
-    // ears
-    g.fillStyle(0xff8a3d, 1); g.fillTriangle(x - 44, by - 22, x - 34, by - 74, x - 10, by - 44); g.fillTriangle(x + 44, by - 22, x + 34, by - 74, x + 10, by - 44);
-    g.fillStyle(0xffd3b0, 1); g.fillTriangle(x - 36, by - 32, x - 32, by - 62, x - 18, by - 42); g.fillTriangle(x + 36, by - 32, x + 32, by - 62, x + 18, by - 42);
-    // courier visor (seen from behind: helmet band + glow)
-    g.fillStyle(0x1b2a4a, 1); g.fillRoundedRect(x - 46, by - 24, 92, 26, 12);
-    g.fillStyle(col, 1); g.fillRoundedRect(x - 40, by - 19, 80, 8, 4);
-    // satchel strap + bag
-    g.lineStyle(9, 0x2d6cdf, 1); g.lineBetween(x - 36, by - 2, x + 30, by + 40);
-    g.fillStyle(0x2d6cdf, 1); g.fillRoundedRect(x + 10, by + 22, 44, 34, 8);
-    g.fillStyle(0xffe066, 1); this.star(g, x + 32, by + 39, 10, 4.5, 1, 0xffe066, 1);
-    // antenna with star tip
-    g.lineStyle(4, 0x1b2a4a, 1); g.lineBetween(x, by - 48, x + 6, by - 92);
-    this.star(g, x + 6, by - 96, 12, 5, 1, col, 1);
+    let key = 'coin-acorn';
+    if (o.type === 'coin') key = 'coin-acorn';
+    else if (o.visual === 'fire') key = 'wall-fire';
+    else if (o.visual === 'ice') key = 'wall-ice';
+    else if (o.visual) key = 'obs-' + o.visual;
+    else if (o.type === 'high') key = 'obs-branch';
+    else if (o.type === 'wall') key = 'obs-stump';
+    else if (o.type === 'low') key = 'obs-log';
+    if (!o.spr || !o.spr.active) o.spr = this.getSpr(key);
+    else if (o.spr.texture.key !== key && this.textures.exists(key)) o.spr.setTexture(key);
+    const fade = Math.min(1, (SPAWNZ + 5 - o.z) / 25);
+    const s = Math.max(0.04, proj(o.lane || 0, o.z).s);
+    o.spr.setAlpha(fade);
+    o.spr.setDepth(10 + (20 - o.z) * 0.05);
+    if (o.type === 'coin') {
+      const p = proj(o.lane, o.z, (o.h || 0) + 50);
+      const spin = Math.max(0.2, Math.abs(Math.cos(this.t * 5 + o.z * 0.2)));
+      const sz = 56 * p.s;
+      o.spr.setPosition(p.x, p.y);
+      o.spr.setDisplaySize(sz * spin, sz);
+      o.spr.setOrigin(0.5, 0.5);
+      o.spr.setTint(0xffffff);
+      return;
+    }
+    const b = proj(o.lane || 0, o.z);
+    if (o.type === 'gate' || o.type === 'pwall') {
+      const solid = o.phase !== this.phase;
+      const h = 300 * s;
+      const tintOn = !solid;
+      const placeWall = (spr, lane, width) => {
+        const p = proj(lane, o.z);
+        spr.setOrigin(0.5, 1);
+        spr.setPosition(p.x, p.y);
+        spr.setDisplaySize(width, h);
+        spr.setAlpha(fade * (solid ? 1 : 0.38));
+        spr.setDepth(10 + (20 - o.z) * 0.05);
+        spr.setVisible(true).setActive(true);
+        if (tintOn) spr.setTint(0xccffff); else spr.clearTint();
+      };
+      if (o.type === 'gate') {
+        if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
+        if (!o.sprs || o.sprs.length < 3) o.sprs = [this.getSpr(key), this.getSpr(key), this.getSpr(key)];
+        const width = Math.max(20, (proj(0.42, o.z).x - proj(-0.42, o.z).x));
+        for (let i = 0; i < 3; i++) {
+          if (o.sprs[i].texture.key !== key && this.textures.exists(key)) o.sprs[i].setTexture(key);
+          placeWall(o.sprs[i], i - 1, width);
+        }
+      } else {
+        const width = Math.max(20, (proj((o.lane || 0) + 0.42, o.z).x - proj((o.lane || 0) - 0.42, o.z).x));
+        placeWall(o.spr, o.lane || 0, width);
+      }
+      return;
+    }
+    if (o.type === 'high') {
+      const p = proj(o.lane, o.z, 0);
+      o.spr.setOrigin(0.5, 1);
+      o.spr.setPosition(p.x, p.y - 90 * s);
+      o.spr.setDisplaySize(200 * s, 90 * s);
+      return;
+    }
+    // low or wall (stump/rock) sitting on the ground
+    const p = proj(o.lane, o.z);
+    o.spr.setOrigin(0.5, 0.92);
+    o.spr.setPosition(p.x, p.y);
+    if (o.type === 'low') {
+      const isSnow = o.visual === 'snowbank';
+      const isFence = o.visual === 'fence';
+      const bw = (isSnow ? 200 : isFence ? 190 : 175) * s;
+      const bh = (isSnow ? 80 : isFence ? 95 : 70) * s;
+      o.spr.setDisplaySize(bw, bh);
+    } else {
+      const isStump = o.visual === 'stump';
+      o.spr.setDisplaySize((isStump ? 160 : 170) * s, (isStump ? 230 : 180) * s);
+    }
+  }
+
+  drawWeather(fx) {
+    const kind = SEASONS[this.seasonIndex()].weather;
+    if (kind === 'snow' || kind === 'dust') {
+      if (this.wSprs) this.wSprs.forEach(s => s.setVisible(false));
+      for (const w of this.weather) {
+        if (kind === 'snow') { fx.fillStyle(0xffffff, 0.35 + w.sc * 0.5); fx.fillCircle(w.x, w.y, 2 + w.sc * 3.2); }
+        else { fx.fillStyle(0xffe6a0, 0.18 + w.sc * 0.2); fx.fillCircle(w.x, w.y, 1.2 + w.sc * 1.8); }
+      }
+      return;
+    }
+    // petals / leaves as tiny rotated diamonds if images aren't blitted; use images via a couple of pooled...
+    // Keep it cheap: draw tinted ellipses / leaf diamonds, plus occasional image stamps through graphics isn't possible.
+    // Use the particle textures via a small rotating image pool.
+    if (!this.wSprs) {
+      this.wSprs = [];
+      for (let i = 0; i < 40; i++) {
+        const s = this.add.image(0, 0, kind === 'leaf' ? 'part-leaf' : 'part-petal').setDepth(16).setOrigin(0.5);
+        this.wSprs.push(s);
+      }
+    }
+    const want = kind === 'leaf' ? 'part-leaf' : 'part-petal';
+    for (let i = 0; i < this.wSprs.length; i++) {
+      const s = this.wSprs[i], w = this.weather[i];
+      if (!w) { s.setVisible(false); continue; }
+      if (s.texture.key !== want) s.setTexture(want);
+      s.setVisible(true).setPosition(w.x, w.y).setRotation(w.rot).setScale(0.12 * w.sc, 0.12 * w.sc).setAlpha(0.85);
+    }
   }
 }
 
@@ -479,12 +1297,12 @@ window.addEventListener('load', () => {
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: 'game',
-    backgroundColor: '#0b0620',
+    backgroundColor: '#1a2a14',
     width: W, height: H,
     scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-    render: { antialias: true },
+    render: { antialias: true, powerPreference: 'high-performance' },
     input: { activePointers: 3 },
-    scene: [RunScene]
+    scene: [BootScene, RunScene]
   });
   window.__game = game;
   document.addEventListener('gesturestart', e => e.preventDefault());
