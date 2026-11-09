@@ -6,20 +6,169 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#1a2a14">
+<meta name="theme-color" content="#152416">
+<meta name="apple-mobile-web-app-title" content="Season Shift">
 <title>Season Shift</title>
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
+<!-- SEASON_SHIFT_V3_3D -->
 <style>
-  html,body{margin:0;padding:0;width:100%;height:100%;background:#1a2a14;overflow:hidden;
-    touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overscroll-behavior:none}
-  #game{position:fixed;inset:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-  canvas{display:block;touch-action:none}
+@font-face{font-family:Fredoka;font-style:normal;font-weight:600;font-display:swap;
+  src:url('assets/fonts/fredoka-latin-600-normal.woff2') format('woff2'),
+      url('assets/fonts/fredoka-latin-600-normal.woff') format('woff')}
+@font-face{font-family:Fredoka;font-style:normal;font-weight:700;font-display:swap;
+  src:url('assets/fonts/fredoka-latin-700-normal.woff2') format('woff2'),
+      url('assets/fonts/fredoka-latin-700-normal.woff') format('woff')}
+:root{
+  --safe-t:max(16px, env(safe-area-inset-top, 0px));
+  --safe-r:max(16px, env(safe-area-inset-right, 0px));
+  --safe-b:max(16px, env(safe-area-inset-bottom, 0px));
+  --safe-l:max(16px, env(safe-area-inset-left, 0px));
+  --accent:#ff8fb3;
+  --ink:#fffdf8;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body,#app{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#10180e;
+  font-family:Fredoka,system-ui,sans-serif;touch-action:none;-webkit-user-select:none;user-select:none;
+  -webkit-touch-callout:none;overscroll-behavior:none;color:var(--ink)}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#ui{position:fixed;inset:0;pointer-events:none;z-index:2}
+#ui .hit, #ui button{pointer-events:auto;font-family:inherit;border:0;cursor:pointer}
+.hidden{display:none !important}
+#home{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  padding:var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l)}
+#home-top{position:absolute;top:var(--safe-t);left:var(--safe-l);right:var(--safe-r);
+  display:flex;align-items:center;justify-content:space-between;z-index:3}
+.icon-btn{width:52px;height:52px;border-radius:18px;background:rgba(12,16,20,.42);
+  color:#fff;font-size:22px;font-weight:700;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  box-shadow:0 8px 22px rgba(0,0,0,.22);display:grid;place-items:center;line-height:1}
+.coin-pill{height:52px;padding:0 16px 0 10px;border-radius:999px;background:rgba(12,16,20,.42);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);display:flex;align-items:center;gap:8px;
+  font-weight:700;font-size:22px;box-shadow:0 8px 22px rgba(0,0,0,.22)}
+.coin-dot{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff4b0,#ffd23f 45%,#e0a000);
+  box-shadow:0 0 0 3px rgba(255,210,63,.25)}
+#brand{margin-top:72px;text-align:center;text-shadow:0 3px 0 rgba(0,0,0,.25),0 10px 28px rgba(0,0,0,.35);pointer-events:none}
+#brand .logo{font-weight:700;font-size:18px;letter-spacing:.22em;opacity:.9}
+#season-name{margin-top:4px;font-weight:700;font-size:64px;line-height:1;letter-spacing:.02em}
+#season-tag{margin-top:4px;font-weight:600;font-size:20px;opacity:.92}
+#home-bottom{margin-top:auto;width:100%;display:flex;flex-direction:column;align-items:center;padding-bottom:8px}
+#dots{display:flex;gap:10px;margin:0 0 12px;position:relative;z-index:3}
+#dots span{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.45);box-shadow:0 0 0 3px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.35);transition:all .2s}
+#dots span.on{width:22px;border-radius:8px;background:#fff}
+#btn-start{width:min(86%, 340px);height:64px;border-radius:22px;background:#fff;color:#1b1b1b;
+  font-weight:700;font-size:30px;letter-spacing:.08em;
+  box-shadow:0 10px 0 rgba(0,0,0,.18),0 16px 30px rgba(0,0,0,.25);
+  margin-bottom:14px}
+#btn-start:active{transform:translateY(2px);box-shadow:0 8px 0 rgba(0,0,0,.18),0 10px 20px rgba(0,0,0,.25)}
+#home-hint{font-size:15px;font-weight:600;opacity:.9;text-shadow:0 2px 8px rgba(0,0,0,.5);margin-bottom:10px}
+#btn-shop{height:48px;padding:0 22px;border-radius:16px;background:rgba(12,16,20,.42);color:#fff;
+  font-weight:700;font-size:18px;letter-spacing:.06em;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  box-shadow:0 8px 22px rgba(0,0,0,.22);margin-bottom:6px}
+#hud{position:absolute;inset:0;padding:var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l)}
+#hud-score{position:absolute;top:var(--safe-t);left:var(--safe-l);font-weight:700;font-size:40px;
+  text-shadow:0 3px 0 rgba(0,0,0,.28),0 8px 18px rgba(0,0,0,.35)}
+#hud-coins{position:absolute;top:var(--safe-t);right:var(--safe-r);font-weight:700;font-size:28px;
+  display:flex;align-items:center;gap:8px;text-shadow:0 3px 0 rgba(0,0,0,.28),0 8px 18px rgba(0,0,0,.35)}
+#hud-form{position:absolute;left:50%;bottom:var(--safe-b);transform:translateX(-50%);
+  min-width:190px;height:54px;padding:0 22px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:22px;letter-spacing:.12em;color:#fff;pointer-events:none;
+  background:rgba(0,0,0,.35);border:3px solid #ff6a21;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+#hud-form.frost{border-color:#7ad7ff}
+#toast{position:absolute;left:50%;top:18%;transform:translateX(-50%);font-weight:700;font-size:20px;
+  text-align:center;text-shadow:0 3px 0 rgba(0,0,0,.3),0 8px 18px rgba(0,0,0,.4);opacity:0;transition:opacity .2s;
+  pointer-events:none;width:90%;white-space:nowrap}
+#shop, #over{position:absolute;inset:0;z-index:6;background:rgba(6,10,16,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:center;padding:var(--safe-t) 18px var(--safe-b)}
+.sheet{width:min(100%,420px);max-height:100%;overflow:auto;background:linear-gradient(180deg,#fffaf3,#f3e2c8);
+  color:#2a2218;border-radius:28px;padding:18px 16px 22px;box-shadow:0 24px 60px rgba(0,0,0,.35)}
+.sheet h2{margin:0;text-align:center;font-size:32px;font-weight:700;letter-spacing:.08em}
+.sheet-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.sheet-top .coin-pill{background:#2a2218;color:#fff;height:40px;font-size:18px}
+.xbtn{width:40px;height:40px;border-radius:14px;background:#2a2218;color:#fff;font-size:20px;font-weight:700}
+.tabs{display:flex;gap:8px;margin:12px 0 14px}
+.tabs button{flex:1;height:42px;border-radius:14px;background:#e8d5b5;color:#2a2218;font-weight:700;font-size:16px}
+.tabs button.on{background:#2a2218;color:#fff}
+.up-row, .cos-row{display:flex;align-items:center;gap:10px;background:#fff;border-radius:16px;padding:10px 10px;
+  margin-bottom:8px;box-shadow:0 2px 0 rgba(0,0,0,.06)}
+.up-row .meta{flex:1;min-width:0}
+.up-row .name, .cos-row .name{font-weight:700;font-size:16px}
+.up-row .blurb{font-size:12px;font-weight:600;opacity:.72;margin-top:1px}
+.pips{display:flex;gap:3px;margin-top:5px}
+.pips i{width:10px;height:8px;border-radius:3px;background:#e0d0b4;display:block}
+.pips i.on{background:#e07a2f}
+.buy, .equip{height:36px;padding:0 12px;border-radius:12px;background:#e07a2f;color:#fff;font-weight:700;font-size:14px;white-space:nowrap}
+.buy:disabled, .equip:disabled{background:#c9b89a;color:#fff}
+.equip.on{background:#2a7a45}
+.swatch{width:44px;height:44px;border-radius:14px;flex:none;box-shadow:inset 0 -4px 0 rgba(0,0,0,.15),0 0 0 2px #fff}
+#over .sheet{text-align:center;padding:28px 20px 24px}
+#over-title{font-size:44px;font-weight:700;margin:0 0 6px;color:#d94a3a}
+#over-score{font-size:56px;font-weight:700;line-height:1;margin:8px 0 2px}
+#over-best, #over-coins{font-size:20px;font-weight:700;margin:4px 0;opacity:.9}
+#over-new{color:#d98a10;font-size:22px;font-weight:700;margin:8px 0;min-height:1.2em}
+.over-btns{display:flex;gap:10px;margin-top:16px}
+.over-btns button{flex:1;height:52px;border-radius:16px;font-weight:700;font-size:18px}
+#btn-retry{background:#e07a2f;color:#fff}
+#btn-home{background:#2a2218;color:#fff}
+#boot{position:fixed;inset:0;display:grid;place-items:center;background:#152416;z-index:10;font-weight:700;font-size:22px;letter-spacing:.14em}
 </style>
 </head>
 <body>
-<div id="game"></div>
-<script src="phaser.min.js"></script>
-<script src="game.js"></script>
+<div id="app">
+  <canvas id="c"></canvas>
+  <div id="boot">SEASON SHIFT</div>
+  <div id="ui">
+    <div id="home">
+      <div id="home-top">
+        <button class="icon-btn hit" id="btn-mute" aria-label="Music">♪</button>
+        <div class="coin-pill"><span class="coin-dot"></span><span id="home-coins">0</span></div>
+      </div>
+      <div id="brand">
+        <div class="logo">SEASON SHIFT</div>
+        <div id="season-name">SPRING</div>
+        <div id="season-tag">Blossom Trails</div>
+      </div>
+      <div id="home-bottom">
+        <div id="dots"><span class="on"></span><span></span><span></span><span></span></div>
+        <button class="hit" id="btn-start">START</button>
+        <div id="home-hint">Swipe to change season</div>
+        <button class="hit" id="btn-shop">SHOP</button>
+      </div>
+    </div>
+    <div id="hud" class="hidden">
+      <div id="hud-score">0</div>
+      <div id="hud-coins"><span class="coin-dot"></span><span id="hud-coin-n">0</span></div>
+      <div id="hud-form">EMBER</div>
+    </div>
+    <div id="toast"></div>
+    <div id="shop" class="hidden">
+      <div class="sheet">
+        <div class="sheet-top">
+          <button class="xbtn hit" id="btn-shop-close">✕</button>
+          <h2>SHOP</h2>
+          <div class="coin-pill"><span class="coin-dot"></span><span id="shop-coins">0</span></div>
+        </div>
+        <div class="tabs">
+          <button class="hit on" id="tab-upgrades">UPGRADES</button>
+          <button class="hit" id="tab-costumes">OUTFITS</button>
+        </div>
+        <div id="shop-list"></div>
+      </div>
+    </div>
+    <div id="over" class="hidden">
+      <div class="sheet">
+        <div id="over-title">TRIP OVER</div>
+        <div id="over-score">0</div>
+        <div id="over-best">BEST  0</div>
+        <div id="over-coins">COINS  +0</div>
+        <div id="over-new"></div>
+        <div class="over-btns">
+          <button class="hit" id="btn-retry">RETRY</button>
+          <button class="hit" id="btn-home">HOME</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="module" src="game.js"></script>
 </body>
 </html>
