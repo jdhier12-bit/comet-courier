@@ -1,18 +1,19 @@
-// Season Shift v2 — SEASON_SHIFT_V2
-// An original trail runner for Joseph. Ember & Frost form-shift.
+// Season Shift v2 — SEASON_SHIFT_V2_TAVI
+// An original trail runner for Joseph. Tavi the tiger cub, Ember & Frost form-shift.
 // All 40 routes share one continuous difficulty curve (kept from v1).
+// Chase-cam: over-the-shoulder view, path running to the horizon.
 (() => {
 'use strict';
 const W = 720;
 const H = Math.round(Math.min(Math.max(W * (window.innerHeight / Math.max(window.innerWidth, 1)), 1280), 1700));
-const VPX = W / 2, HY = Math.round(H * 0.44), PY = H - 210, LW = 188, D = 22, SPAWNZ = 170;
+const VPX = W / 2, HY = Math.round(H * 0.40), PY = H - 170, LW = 200, D = 18, SPAWNZ = 190;
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 const EMBER = 0, FROST = 1;
 const LEVELS_PER = 10, LEVEL_COUNT = 40;
 const PHASE_COL = [0xff6a21, 0x7ad7ff];
 const PHASE_NAME = ['EMBER', 'FROST'];
-const VERSION = 'SEASON_SHIFT_V2';
+const VERSION = 'SEASON_SHIFT_V2_TAVI';
 
 const SEASONS = [
   { name: 'SPRING', short: 'SPRING', hint: 'Blossoms on the meadow trail.',
@@ -38,12 +39,12 @@ const UPGRADES = [
     prices: [150, 400, 800, 1500, 2500] }
 ];
 const COSTUMES = [
-  { id: 'classic',    name: 'Classic',     price: 0,   key: 'nova-ember-run1' },
-  { id: 'scarf',      name: 'Scarf',       price: 200, key: 'nova-costume-scarf' },
-  { id: 'raincoat',   name: 'Raincoat',    price: 350, key: 'nova-costume-raincoat' },
-  { id: 'sunglasses', name: 'Sunglasses',  price: 300, key: 'nova-costume-sunglasses' },
-  { id: 'parka',      name: 'Winter Parka',price: 500, key: 'nova-costume-parka' },
-  { id: 'ninja',      name: 'Ninja',       price: 800, key: 'nova-costume-ninja' }
+  { id: 'classic',    name: 'Classic',     price: 0,   key: 'tavi-ember-run1' },
+  { id: 'scarf',      name: 'Scarf',       price: 200, key: 'tavi-costume-scarf' },
+  { id: 'raincoat',   name: 'Raincoat',    price: 350, key: 'tavi-costume-raincoat' },
+  { id: 'sunglasses', name: 'Sunglasses',  price: 300, key: 'tavi-costume-sunglasses' },
+  { id: 'parka',      name: 'Winter Parka',price: 500, key: 'tavi-costume-parka' },
+  { id: 'ninja',      name: 'Ninja',       price: 800, key: 'tavi-costume-ninja' }
 ];
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -51,9 +52,10 @@ function lerpColor(c1, c2, t) {
   const r = lerp((c1 >> 16) & 255, (c2 >> 16) & 255, t), g = lerp((c1 >> 8) & 255, (c2 >> 8) & 255, t), b = lerp(c1 & 255, c2 & 255, t);
   return ((r | 0) << 16) | ((g | 0) << 8) | (b | 0);
 }
+let CAMX = 0;
 function proj(lane, z, h = 0) {
   const s = D / (D + Math.max(z, -D + 1));
-  return { x: VPX + lane * LW * s, y: HY + (PY - HY) * s - h * s, s };
+  return { x: VPX + (lane - CAMX) * LW * s, y: HY + (PY - HY) * s - h * s, s };
 }
 
 // One continuous difficulty curve across all 40 levels (index 0..39).
@@ -112,13 +114,18 @@ function defaultSave() {
     coins: 0,
     upgrades: { magnet: 0, shield: 0, doubleCoins: 0, headStart: 0, extraLife: 0 },
     owned: { classic: true, scarf: false, raincoat: false, sunglasses: false, parka: false, ninja: false },
-    equipped: 'classic'
+    equipped: 'classic',
+    seasonCleared: [0, 0, 0, 0],
+    muted: false
   };
 }
 function applyCheats(s) {
   try {
     const q = new URLSearchParams(location.search);
-    if (q.get('unlockall') === '1') s.unlocked = LEVEL_COUNT;
+    if (q.get('unlockall') === '1') {
+      s.unlocked = LEVEL_COUNT;
+      s.seasonCleared = [LEVELS_PER, LEVELS_PER, LEVELS_PER, LEVELS_PER];
+    }
     const c = parseInt(q.get('coins') || '', 10);
     if (c > 0) s.coins = c;
   } catch (e) {}
@@ -139,6 +146,14 @@ function loadSave() {
     s.upgrades = Object.assign({ magnet: 0, shield: 0, doubleCoins: 0, headStart: 0, extraLife: 0 }, s.upgrades || {});
     s.owned = Object.assign({ classic: true, scarf: false, raincoat: false, sunglasses: false, parka: false, ninja: false }, s.owned || {});
     if (!COSTUMES.some(c => c.id === s.equipped && s.owned[c.id])) s.equipped = 'classic';
+    if (!Array.isArray(s.seasonCleared) || s.seasonCleared.length !== 4) {
+      const c = s.cleared | 0;
+      s.seasonCleared = [0, 0, 0, 0];
+      for (let seas = 0; seas < 4; seas++) s.seasonCleared[seas] = Math.max(0, Math.min(LEVELS_PER, c - seas * LEVELS_PER));
+    } else {
+      s.seasonCleared = s.seasonCleared.map(n => Math.max(0, Math.min(LEVELS_PER, n | 0)));
+    }
+    s.muted = !!s.muted;
     return applyCheats(s);
   } catch (e) { return applyCheats(defaultSave()); }
 }
@@ -154,6 +169,7 @@ const Sfx = {
   unlock() {
     if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) this.ctx = new AC(); }
     if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    Music.unlock();
   },
   tone(f1, f2, dur, type = 'square', vol = 0.08) {
     const c = this.ctx; if (!c || c.state !== 'running') return;
@@ -172,12 +188,108 @@ const Sfx = {
   win() { this.tone(520, 780, 0.18, 'triangle', 0.1); setTimeout(() => this.tone(780, 1040, 0.25, 'triangle', 0.1), 140); }
 };
 
+function isLevelOpen(save, i) {
+  if ((save.unlocked | 0) >= LEVEL_COUNT) return true;
+  const seas = (i / LEVELS_PER) | 0, n = i % LEVELS_PER;
+  const sc = (save.seasonCleared && save.seasonCleared[seas]) | 0;
+  return n <= sc;
+}
+function totalCleared(save) {
+  const sc = save.seasonCleared || [0, 0, 0, 0];
+  return sc.reduce((a, b) => a + (b | 0), 0);
+}
+
+const MUSIC_NAMES = ['spring', 'summer', 'autumn', 'winter'];
+const Music = {
+  muted: false,
+  unlocked: false,
+  intended: null,
+  current: null,
+  audios: {},
+  missing: {},
+  fade: 0,
+  vol: 0.46,
+  ensure(name) {
+    if (!name || this.missing[name]) return null;
+    if (this.audios[name]) return this.audios[name];
+    const a = new Audio();
+    a.src = 'assets/music/' + name + '.mp3';
+    a.loop = true;
+    a.preload = 'auto';
+    a.volume = 0;
+    a.addEventListener('error', () => { this.missing[name] = true; this.audios[name] = null; });
+    this.audios[name] = a;
+    return a;
+  },
+  unlock() {
+    this.unlocked = true;
+    // Warm every season track inside the user gesture so iOS will allow later play()
+    MUSIC_NAMES.forEach(n => {
+      const a = this.ensure(n);
+      if (!a) return;
+      const p = a.play();
+      if (p && p.then) {
+        p.then(() => { if (this.current !== n) { a.pause(); a.volume = 0; } }).catch(() => {});
+      }
+    });
+    if (this.intended && !this.muted) this.play(this.intended, false);
+  },
+  setMuted(m) {
+    this.muted = !!m;
+    if (this.muted) {
+      Object.keys(this.audios).forEach(k => { const a = this.audios[k]; if (a) { a.pause(); a.volume = 0; } });
+      this.current = null;
+    } else if (this.intended) {
+      this.play(this.intended, true);
+    }
+  },
+  play(name, force) {
+    this.intended = name;
+    if (!name || this.muted) return;
+    const a = this.ensure(name);
+    if (!a || this.missing[name]) return;
+    if (this.current === name && !a.paused && !force) return;
+    const prev = this.current && this.audios[this.current];
+    this.current = name;
+    const p = a.play();
+    if (p && p.catch) p.catch(() => {});
+    this.fade = 0.7;
+    this._from = prev && prev !== a ? prev : null;
+    this._to = a;
+    if (!this._from) a.volume = this.vol;
+  },
+  stop() {
+    this.intended = null;
+    this.fade = 0.55;
+    this._from = this.current && this.audios[this.current];
+    this._to = null;
+    this.current = null;
+  },
+  update(dt) {
+    if (this.fade > 0) {
+      const start = 0.7;
+      this.fade = Math.max(0, this.fade - dt);
+      const k = this.fade <= 0 ? 1 : Math.min(1, 1 - this.fade / start);
+      if (this._from) {
+        this._from.volume = Math.max(0, this.vol * (1 - k));
+        if (k >= 1) { this._from.pause(); this._from.volume = 0; this._from = null; }
+      }
+      if (this._to) this._to.volume = this.vol * k;
+    }
+  }
+};
+window.__Music = Music;
+
 const ASSET_KEYS = [
   'bg-spring','bg-summer','bg-autumn','bg-winter',
   'ground-spring','ground-summer','ground-autumn','ground-winter',
-  'nova-ember-run1','nova-ember-run2','nova-ember-jump','nova-ember-slide',
-  'nova-frost-run1','nova-frost-jump','nova-frost-slide',
-  'nova-costume-scarf','nova-costume-raincoat','nova-costume-sunglasses','nova-costume-parka','nova-costume-ninja',
+  'tavi-ember-run1','tavi-ember-run2','tavi-ember-jump','tavi-ember-slide',
+  'tavi-frost-run1','tavi-frost-run2','tavi-frost-jump','tavi-frost-slide',
+  'tavi-costume-scarf','tavi-costume-scarf-jump','tavi-costume-scarf-slide',
+  'tavi-costume-raincoat','tavi-costume-raincoat-jump','tavi-costume-raincoat-slide',
+  'tavi-costume-sunglasses','tavi-costume-sunglasses-jump','tavi-costume-sunglasses-slide',
+  'tavi-costume-parka','tavi-costume-parka-jump','tavi-costume-parka-slide',
+  'tavi-costume-ninja','tavi-costume-ninja-jump','tavi-costume-ninja-slide',
   'obs-log','obs-fence','obs-rock','obs-snowbank','obs-branch','obs-stump',
   'wall-fire','wall-ice','coin-acorn','part-leaf','part-petal'
 ];
@@ -208,6 +320,7 @@ class RunScene extends Phaser.Scene {
 
   create() {
     this.save = loadSave();
+    Music.setMuted(!!this.save.muted);
     writeSave(this.save);
     this.best = this.save.best;
     this.t = 0;
@@ -237,7 +350,7 @@ class RunScene extends Phaser.Scene {
     this.mapG = this.add.graphics().setDepth(8);
     this.uiG = this.add.graphics().setDepth(9);
 
-    this.playerSpr = this.add.image(VPX, PY, 'nova-ember-run1').setOrigin(0.5, 0.9).setDepth(15);
+    this.playerSpr = this.add.image(VPX, PY, 'tavi-ember-run1').setOrigin(0.5, 0.9).setDepth(15);
     this.playerSpr.setDisplaySize(210, 250);
 
     this.groundImgs = {
@@ -260,19 +373,21 @@ class RunScene extends Phaser.Scene {
     if (this.textures.exists(key) && this.bgSpr.texture.key !== key) this.bgSpr.setTexture(key);
     const tex = this.textures.get(this.bgSpr.texture.key);
     const src = tex.getSourceImage();
-    const scale = Math.max(W / src.width, (HY + 80) / (src.height * 0.62));
+    // Extra width covers chase-cam pans so the sky never leaves a green gap
+    const scale = Math.max((W + 220) / src.width, (HY + 80) / (src.height * 0.62));
     this.bgSpr.setScale(scale);
     this.bgSpr.y = 0;
-    this.bgSpr.x = VPX - (this.px || 0) * 18;
+    this.bgSpr.x = VPX - ((this.state === 'play' ? this.camX : 0) || 0) * 36;
   }
   seasonIndex() {
     if (this.state === 'play' || this.state === 'over' || this.state === 'clear') return (this.diff && this.diff.season) || 0;
     return this.viewSeason || 0;
   }
   currentSeasonView() {
-    const c = Math.min(this.save.cleared, LEVEL_COUNT);
-    if (c >= LEVEL_COUNT) return 3;
-    return Math.min(3, (c / LEVELS_PER) | 0);
+    if (this.viewSeason >= 0 && this.viewSeason <= 3) return this.viewSeason;
+    const sc = this.save.seasonCleared || [0, 0, 0, 0];
+    for (let s = 0; s < 4; s++) if (sc[s] < LEVELS_PER) return s;
+    return 3;
   }
 
   txt(x, y, s, size, color = '#ffffff', extra = {}) {
@@ -292,17 +407,32 @@ class RunScene extends Phaser.Scene {
     this.livesT = this.txt(30, 118, '', 24, '#ff8a8a').setOrigin(0, 0.5);
     this.toastT = this.txt(VPX, H - 280, '', 32, '#ffffff').setAlpha(0).setDepth(30);
 
-    this.titleT = this.txt(VPX, 150, 'SEASON\nSHIFT', 96, '#fff4d6', {
+    this.titleT = this.txt(VPX, 92, 'SEASON SHIFT', 62, '#fff4d6', {
       fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif',
-      strokeThickness: 14, lineSpacing: -16
+      strokeThickness: 12
     });
-    this.subT = this.txt(VPX, 330, 'Nova the fox  ·  Ember & Frost', 26, '#ffe7b0');
-    this.homeHelpT = this.txt(VPX, 390, 'Swipe to move, jump and slide.\nTap to shift between Ember and Frost.\nIce walls open in Frost. Fire walls open in Ember.', 22, '#efe6d2', { lineSpacing: 6, strokeThickness: 3 });
-    this.playT = this.txt(VPX, H - 340, 'PLAY', 56, '#1a140c', { strokeThickness: 0 });
-    this.trailsT = this.txt(VPX - 160, H - 210, 'TRAILS', 32, '#fff4d6');
-    this.shopT = this.txt(VPX + 160, H - 210, 'SHOP', 32, '#fff4d6');
-    this.homeWalletT = this.txt(VPX, H - 90, '', 28, '#ffe066');
-    this.homeBestT = this.txt(VPX, H - 50, '', 22, '#efe6d2', { strokeThickness: 3 });
+    this.subT = this.txt(VPX, 150, 'Tavi the tiger  ·  Ember & Frost', 24, '#ffe7b0');
+    this.homeHelpT = this.txt(VPX, 190, 'Pick a season. Swipe to run, jump and slide. Tap to shift form.', 18, '#efe6d2', { strokeThickness: 3 });
+    this.playT = this.txt(VPX, 0, '', 1, '#fff').setVisible(false);
+    this.trailsT = this.txt(VPX, 0, '', 1, '#fff').setVisible(false);
+    this.shopT = this.txt(VPX, H - 118, 'SHOP', 32, '#fff4d6');
+    this.muteT = this.txt(W - 86, H - 118, 'MUSIC', 20, '#fff4d6');
+    this.homeWalletT = this.txt(VPX, H - 48, '', 26, '#ffe066');
+    this.homeBestT = this.txt(VPX, H - 18, '', 18, '#efe6d2', { strokeThickness: 3 });
+    this.hubNameT = []; this.hubProgT = []; this.hubHintT = []; this.hubImgs = []; this.hubMasks = [];
+    const CARD_COL = [0x3a6a3a, 0x2a6288, 0x8a3e1c, 0x2a4a6a];
+    for (let s = 0; s < 4; s++) {
+      const key = 'bg-' + SEASONS[s].name.toLowerCase();
+      const img = this.add.image(0, 0, key).setDepth(10).setVisible(false).setOrigin(0.5, 0.35);
+      const gmask = this.make.graphics({ x: 0, y: 0, add: false });
+      img.setMask(gmask.createGeometryMask());
+      this.hubImgs.push(img);
+      this.hubMasks.push(gmask);
+      this.hubNameT.push(this.txt(0, 0, SEASONS[s].name, 36, '#fff4d6', { fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif', strokeThickness: 8 }));
+      this.hubProgT.push(this.txt(0, 0, '', 22, '#ffe066'));
+      this.hubHintT.push(this.txt(0, 0, SEASONS[s].hint, 16, '#efe6d2', { strokeThickness: 3, wordWrap: { width: 300 } }));
+    }
+    this.hubItems = [...this.hubImgs, ...this.hubNameT, ...this.hubProgT, ...this.hubHintT, this.muteT];
 
     this.mapTitleT = this.txt(VPX, 70, 'CHOOSE A TRAIL', 44, '#fff4d6', { fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif' });
     this.mapSubT = this.txt(VPX, 130, '', 26, '#efe6d2');
@@ -324,7 +454,7 @@ class RunScene extends Phaser.Scene {
     for (let i = 0; i < 12; i++) {
       this.shopLines.push(this.txt(0, 0, '', 24, '#fff4d6').setVisible(false));
     }
-    this.shopPreview = this.add.image(0, 0, 'nova-ember-run1').setVisible(false).setDepth(11).setOrigin(0.5, 0.6);
+    this.shopPreview = this.add.image(0, 0, 'tavi-ember-run1').setVisible(false).setDepth(11).setOrigin(0.5, 0.6);
     this.shopItems = [this.shopTitleT, this.shopWalletT, this.shopTabUpT, this.shopTabCoT, this.shopBackT, this.shopPreview, ...this.shopLines];
 
     this.overT = this.txt(VPX, 300, 'TRAIL\nLOST!', 90, '#ff6b8b', { strokeThickness: 14, lineSpacing: -12 });
@@ -341,7 +471,7 @@ class RunScene extends Phaser.Scene {
 
   setGroup(arr, v) { arr.forEach(o => { if (o && o.setVisible) o.setVisible(v); }); }
   hudItems() { return [this.scoreT, this.coinT, this.routeT, this.phaseT, this.hintT, this.livesT]; }
-  homeItems() { return [this.titleT, this.subT, this.homeHelpT, this.playT, this.trailsT, this.shopT, this.homeWalletT, this.homeBestT]; }
+  homeItems() { return [this.titleT, this.subT, this.homeHelpT, this.shopT, this.muteT, this.homeWalletT, this.homeBestT, ...this.hubItems]; }
   overItems() { return [this.overT, this.finalT, this.newBestT, this.retryT, this.toMapT, this.toHomeT]; }
   clearItems() { return [this.clearT, this.clearSubT, this.nextT, this.toMapT, this.toHomeT]; }
 
@@ -361,21 +491,54 @@ class RunScene extends Phaser.Scene {
   showHome(v) {
     this.hideAll();
     if (!v) return;
+    Music.stop();
     this.setGroup(this.homeItems(), true);
+    const cleared = totalCleared(this.save);
     this.homeWalletT.setText('Acorns  ' + this.save.coins);
     this.homeBestT.setText(this.save.best
-      ? ('BEST  ' + this.save.best + '   ·   ' + this.save.cleared + ' / 40 TRAILS')
-      : '4 seasons  ·  40 trails, each harder than the last');
+      ? ('BEST  ' + this.save.best + '   ·   ' + cleared + ' / 40 TRAILS')
+      : 'All four seasons are open  ·  later seasons run harder');
     this.layoutHome();
   }
   layoutHome() {
     const g = this.uiG; g.clear(); this.uiHits = [];
-    g.fillStyle(0xffc14d, 1); g.fillRoundedRect(VPX - 200, H - 390, 400, 100, 50);
-    g.fillStyle(0x2d5a27, 1); g.fillRoundedRect(VPX - 300, H - 250, 200, 80, 40);
-    g.fillStyle(0x6b3a1f, 1); g.fillRoundedRect(VPX + 100, H - 250, 200, 80, 40);
-    this.uiHits.push({ kind: 'play', x: VPX - 200, y: H - 390, w: 400, h: 100 });
-    this.uiHits.push({ kind: 'map', x: VPX - 300, y: H - 250, w: 200, h: 80 });
-    this.uiHits.push({ kind: 'shop', x: VPX + 100, y: H - 250, w: 200, h: 80 });
+    const bottom = 170;
+    const top = 220;
+    const gapX = 18, gapY = 16;
+    const cardW = Math.round((W - 56 - gapX) / 2);
+    const cardH = Math.round((H - top - bottom - gapY) / 2);
+    const left = Math.round((W - cardW * 2 - gapX) / 2);
+    const CARD_EDGE = [0xff9ab8, 0xffc14d, 0xff7a3d, 0xb8e0ff];
+    for (let s = 0; s < 4; s++) {
+      const col = s % 2, row = (s / 2) | 0;
+      const x = left + col * (cardW + gapX), y = top + row * (cardH + gapY);
+      g.fillStyle(0x0b1208, 0.35);
+      g.fillRoundedRect(x + 4, y + 6, cardW, cardH, 26);
+      g.fillStyle(0x1a2414, 0.55);
+      g.fillRoundedRect(x, y, cardW, cardH, 26);
+      g.lineStyle(4, CARD_EDGE[s], 0.95);
+      g.strokeRoundedRect(x, y, cardW, cardH, 26);
+      const img = this.hubImgs[s];
+      img.setVisible(true).setPosition(x + cardW / 2, y + cardH * 0.42);
+      const sc = Math.max(cardW / Math.max(1, img.width), (cardH * 0.85) / Math.max(1, img.height));
+      img.setScale(sc).setAlpha(0.92);
+      const mg = this.hubMasks[s];
+      mg.clear();
+      mg.fillStyle(0xffffff, 1);
+      mg.fillRoundedRect(x + 6, y + 6, cardW - 12, cardH - 12, 22);
+      const scleared = (this.save.seasonCleared && this.save.seasonCleared[s]) | 0;
+      this.hubNameT[s].setPosition(x + cardW / 2, y + 36).setVisible(true).setDepth(12);
+      this.hubProgT[s].setText(scleared + ' / 10 trails').setPosition(x + cardW / 2, y + 72).setVisible(true).setDepth(12);
+      this.hubHintT[s].setPosition(x + cardW / 2, y + cardH - 28).setVisible(true).setDepth(12);
+      this.uiHits.push({ kind: 'season', s, x, y, w: cardW, h: cardH });
+    }
+    // shop + mute
+    g.fillStyle(0x6b3a1f, 1); g.fillRoundedRect(VPX - 150, H - 150, 220, 64, 32);
+    g.fillStyle(this.save.muted ? 0x3a2a20 : 0x2d5a27, 1); g.fillRoundedRect(W - 150, H - 150, 120, 64, 32);
+    this.shopT.setPosition(VPX - 40, H - 118).setVisible(true);
+    this.muteT.setText(this.save.muted ? 'MUTED' : 'MUSIC').setPosition(W - 90, H - 118).setVisible(true);
+    this.uiHits.push({ kind: 'shop', x: VPX - 150, y: H - 150, w: 220, h: 64 });
+    this.uiHits.push({ kind: 'mute', x: W - 150, y: H - 150, w: 120, h: 64 });
   }
 
   showMap(v) {
@@ -386,26 +549,26 @@ class RunScene extends Phaser.Scene {
   }
   layoutMap() {
     const g = this.mapG; g.clear();
-    const unlocked = this.save.unlocked, cleared = this.save.cleared;
+    const cleared = totalCleared(this.save);
+    const sc = (this.save.seasonCleared && this.save.seasonCleared[this.viewSeason]) | 0;
     this.mapHits = []; this.uiHits = [];
     this.mapSubT.setText(SEASONS[this.viewSeason].name);
     this.mapHintT.setText(SEASONS[this.viewSeason].hint);
-    this.mapProgT.setText(cleared + ' / 40 trails cleared');
+    this.mapProgT.setText(SEASONS[this.viewSeason].name + '  ' + sc + ' / 10    ·    ' + cleared + ' / 40 trails');
     for (let s = 0; s < 4; s++) {
       const x = 24 + s * 174, y = 168, w = 162, h = 58;
-      const open = unlocked > s * LEVELS_PER;
       const active = s === this.viewSeason;
-      g.fillStyle(active ? 0xffc14d : (open ? 0x2d5a27 : 0x2a241c), 1);
+      g.fillStyle(active ? 0xffc14d : 0x2d5a27, 1);
       g.fillRoundedRect(x, y, w, h, 16);
       if (active) { g.lineStyle(3, 0xffffff, 1); g.strokeRoundedRect(x, y, w, h, 16); }
-      this.seasonTs[s].setPosition(x + w / 2, y + h / 2).setColor(active ? '#1a140c' : (open ? '#ffffff' : '#6a6658')).setText(open ? SEASONS[s].short : 'LOCKED');
+      this.seasonTs[s].setPosition(x + w / 2, y + h / 2).setColor(active ? '#1a140c' : '#ffffff').setText(SEASONS[s].short);
       this.mapHits.push({ kind: 'season', s, x, y, w, h });
     }
     const start = this.viewSeason * LEVELS_PER;
     for (let n = 0; n < 10; n++) {
       const i = start + n, col = n % 5, row = (n / 5) | 0;
       const x = 86 + col * 137, y = 340 + row * 155, r = 52;
-      const isCleared = i < cleared, isOpen = i < unlocked, isSel = i === this.selLevel;
+      const isCleared = n < sc, isOpen = isLevelOpen(this.save, i), isSel = i === this.selLevel;
       g.fillStyle(isCleared ? 0x2d6a4f : (isOpen ? 0x3d5a27 : 0x1a1520), 1);
       g.fillCircle(x, y, r);
       g.lineStyle(isSel ? 6 : 3, isCleared ? 0x7CF7A0 : (isOpen ? (isSel ? 0xffc14d : 0xc4e38a) : 0x333328), 1);
@@ -499,7 +662,7 @@ class RunScene extends Phaser.Scene {
   ensureShopSpr(i, key, x, y) {
     if (!this.shopSprs) {
       this.shopSprs = [];
-      for (let k = 0; k < 6; k++) this.shopSprs.push(this.add.image(0, 0, 'nova-ember-run1').setDepth(11).setOrigin(0.5, 0.7));
+      for (let k = 0; k < 6; k++) this.shopSprs.push(this.add.image(0, 0, 'tavi-ember-run1').setDepth(11).setOrigin(0.5, 0.7));
     }
     const s = this.shopSprs[i];
     if (s.texture.key !== key && this.textures.exists(key)) s.setTexture(key);
@@ -528,7 +691,7 @@ class RunScene extends Phaser.Scene {
   resetRun() {
     this.recycleAll();
     this.objs = [];
-    this.lane = 0; this.px = 0;
+    this.lane = 0; this.px = 0; this.camX = 0; CAMX = 0;
     this.jumpH = 0; this.jumpV = 0; this.slideT = 0;
     this.phase = EMBER; this.phaseMix = 0; this.phaseCd = 0;
     const d = difficulty(this.endless ? 0 : this.route);
@@ -590,9 +753,11 @@ class RunScene extends Phaser.Scene {
       }
       if (this.state !== 'play') {
         if (k === 'Escape' || k === 'Backspace' || k === 'KeyH') { if (this.state !== 'home') this.goHome(); return; }
-        if (k === 'KeyM') { this.openMap(); return; }
-        if (k === 'KeyP' && this.state === 'home') { this.startNext(); return; }
+        if (k === 'KeyM' && this.state === 'home') { this.toggleMute(); return; }
         if (k === 'KeyS' && this.state === 'home') { this.openShop(); return; }
+        if (this.state === 'home' && (k === 'Digit1' || k === 'Digit2' || k === 'Digit3' || k === 'Digit4')) {
+          this.openSeason(parseInt(k.slice(-1), 10) - 1); return;
+        }
         if (['Space', 'Enter', 'ArrowUp', 'KeyW'].includes(k)) this.tapAt(VPX, H - 340);
         return;
       }
@@ -623,9 +788,9 @@ class RunScene extends Phaser.Scene {
     if (this.state === 'clear') {
       if (this.deadT < 0.7) return;
       if (y > H - 105) this.goHome();
-      else if (y > H - 170) this.openMap();
-      else if (this.route + 1 < LEVEL_COUNT) this.startRun(this.route + 1, false);
-      else this.openMap();
+      else if (y > H - 170) this.openSeason(this.viewSeason);
+      else if ((this.route % LEVELS_PER) < LEVELS_PER - 1) this.startRun(this.route + 1, false);
+      else this.goHome();
       return;
     }
     this.togglePhase();
@@ -633,9 +798,16 @@ class RunScene extends Phaser.Scene {
   hitHome(x, y) {
     const hit = (this.uiHits || []).find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
     if (!hit) return;
-    if (hit.kind === 'play') this.startNext();
-    else if (hit.kind === 'map') this.openMap();
-    else if (hit.kind === 'shop') this.openShop();
+    if (hit.kind === 'shop') this.openShop();
+    else if (hit.kind === 'mute') this.toggleMute();
+    else if (hit.kind === 'season') this.openSeason(hit.s);
+  }
+  toggleMute() {
+    this.save.muted = !this.save.muted;
+    writeSave(this.save);
+    Music.setMuted(this.save.muted);
+    Sfx.lane();
+    this.layoutHome();
   }
   hitShop(x, y) {
     const hit = (this.uiHits || []).find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
@@ -678,15 +850,22 @@ class RunScene extends Phaser.Scene {
     const hit = (this.mapHits || []).find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
     if (!hit) return;
     if (hit.kind === 'season') {
-      const open = this.save.unlocked > hit.s * LEVELS_PER;
-      if (!open) return this.toast('Clear the previous season first');
-      this.viewSeason = hit.s; this.layoutMap(); return;
+      this.viewSeason = hit.s;
+      Music.play(MUSIC_NAMES[hit.s], false);
+      const sc = (this.save.seasonCleared && this.save.seasonCleared[hit.s]) | 0;
+      this.selLevel = hit.s * LEVELS_PER + Math.min(sc, LEVELS_PER - 1);
+      this.layoutMap(); return;
     }
     if (hit.kind === 'level') {
-      if (hit.i >= this.save.unlocked) return this.toast('Clear the previous trail first');
+      if (!isLevelOpen(this.save, hit.i)) return this.toast('Clear the previous trail first');
       this.selLevel = hit.i; this.startRun(hit.i, false); return;
     }
-    if (hit.kind === 'endless') return this.startRun(Math.min(this.save.cleared, LEVEL_COUNT - 1), true);
+    if (hit.kind === 'endless') {
+      const sc = this.save.seasonCleared || [0, 0, 0, 0];
+      let best = 0;
+      for (let s = 0; s < 4; s++) if (sc[s] > 0) best = Math.max(best, s * LEVELS_PER + sc[s] - 1);
+      return this.startRun(best, true);
+    }
     if (hit.kind === 'back') return this.goHome();
   }
   mapKey(k) {
@@ -695,13 +874,18 @@ class RunScene extends Phaser.Scene {
     else if (k === 'ArrowRight' || k === 'KeyD') { this.selLevel = Math.min(this.viewSeason * 10 + 9, this.selLevel + 1); this.layoutMap(); }
     else if (k === 'ArrowUp' || k === 'KeyW') { this.selLevel = Math.max(this.viewSeason * 10, this.selLevel - 5); this.layoutMap(); }
     else if (k === 'ArrowDown' || k === 'KeyS') { this.selLevel = Math.min(this.viewSeason * 10 + 9, this.selLevel + 5); this.layoutMap(); }
-    else if (k === 'KeyQ') { if (this.viewSeason > 0 && this.save.unlocked > (this.viewSeason - 1) * 10) { this.viewSeason--; this.selLevel = this.viewSeason * 10; this.layoutMap(); } }
-    else if (k === 'KeyE') { if (this.viewSeason < 3 && this.save.unlocked > this.viewSeason * 10 + 10) { this.viewSeason++; this.selLevel = this.viewSeason * 10; this.layoutMap(); } }
+    else if (k === 'KeyQ') { if (this.viewSeason > 0) { this.viewSeason--; this.selLevel = this.viewSeason * 10; Music.play(MUSIC_NAMES[this.viewSeason], false); this.layoutMap(); } }
+    else if (k === 'KeyE') { if (this.viewSeason < 3) { this.viewSeason++; this.selLevel = this.viewSeason * 10; Music.play(MUSIC_NAMES[this.viewSeason], false); this.layoutMap(); } }
     else if (k === 'Space' || k === 'Enter') {
-      if (this.selLevel < this.save.unlocked) this.startRun(this.selLevel, false);
+      if (isLevelOpen(this.save, this.selLevel)) this.startRun(this.selLevel, false);
       else this.toast('Clear the previous trail first');
     }
-    else if (k === 'KeyN') this.startRun(Math.min(this.save.cleared, LEVEL_COUNT - 1), true);
+    else if (k === 'KeyN') {
+      const sc = this.save.seasonCleared || [0, 0, 0, 0];
+      let best = 0;
+      for (let s = 0; s < 4; s++) if (sc[s] > 0) best = Math.max(best, s * LEVELS_PER + sc[s] - 1);
+      this.startRun(best, true);
+    }
   }
 
   move(d) { const n = Phaser.Math.Clamp(this.lane + d, -1, 1); if (n !== this.lane) { this.lane = n; Sfx.lane(); } }
@@ -716,17 +900,22 @@ class RunScene extends Phaser.Scene {
   goHome() {
     this.hideShopExtras();
     this.state = 'home';
-    this.viewSeason = this.currentSeasonView();
+    Music.stop();
     this.showHome(true);
     this.resetRun();
   }
-  openMap() {
+  openSeason(s) {
     this.hideShopExtras();
+    this.viewSeason = Math.max(0, Math.min(3, s | 0));
+    const sc = (this.save.seasonCleared && this.save.seasonCleared[this.viewSeason]) | 0;
+    this.selLevel = this.viewSeason * LEVELS_PER + Math.min(sc, LEVELS_PER - 1);
     this.state = 'map';
-    this.viewSeason = this.currentSeasonView();
-    this.selLevel = Math.min(Math.max(this.save.cleared, 0), this.save.unlocked - 1, LEVEL_COUNT - 1);
+    Music.play(MUSIC_NAMES[this.viewSeason], false);
     this.showMap(true);
     this.resetRun();
+  }
+  openMap() {
+    this.openSeason(this.viewSeason || this.seasonIndex() || 0);
   }
   openShop() {
     this.state = 'shop';
@@ -744,6 +933,7 @@ class RunScene extends Phaser.Scene {
     this.route = index | 0; this.endless = !!endless; this.selLevel = this.route;
     this.viewSeason = (this.route / LEVELS_PER) | 0;
     this.state = 'play';
+    Music.play(MUSIC_NAMES[this.viewSeason], false);
     this.resetRun();
     this.hideAll();
     this.setGroup(this.hudItems(), true);
@@ -853,6 +1043,11 @@ class RunScene extends Phaser.Scene {
     this.dist += spd * dt;
     this.phaseMix = lerp(this.phaseMix, this.phase, Math.min(dt * 8, 1));
     this.px = lerp(this.px, this.lane, Math.min(dt * 16, 1));
+    if (this.camX == null) this.camX = this.px;
+    // Chase-cam lags the runner so lane changes feel like a camera swinging behind Tavi
+    this.camX = lerp(this.camX, this.px, Math.min(dt * 5.2, 1));
+    CAMX = (this.state === 'play') ? this.camX : 0;
+    Music.update(dt);
     if (this.jumpH > 0 || this.jumpV > 0) {
       this.jumpV -= 2700 * dt;
       this.jumpH = Math.max(0, this.jumpH + this.jumpV * dt);
@@ -914,7 +1109,7 @@ class RunScene extends Phaser.Scene {
     this.shake = Math.max(0, this.shake - dt * 2); this.flash = Math.max(0, this.flash - dt * 2.5);
     this.cameras.main.setScroll((Math.random() - 0.5) * 30 * this.shake, (Math.random() - 0.5) * 30 * this.shake);
 
-    if (this.state === 'home') this.playT.setAlpha(0.8 + 0.2 * Math.sin(this.t * 4));
+    if (this.state === 'home') { /* season cards are the home call-to-action */ }
     if (this.state === 'over') this.retryT.setAlpha(this.deadT > 0.35 ? 0.7 + 0.3 * Math.sin(this.t * 4) : Math.max(0, this.deadT / 0.35));
     if (this.state === 'clear') this.nextT.setAlpha(this.deadT > 0.35 ? 0.7 + 0.3 * Math.sin(this.t * 4) : Math.max(0, this.deadT / 0.35));
 
@@ -984,14 +1179,18 @@ class RunScene extends Phaser.Scene {
     this.score = Math.floor(this.dist) + this.coins * 25;
     Sfx.win();
     for (let i = 0; i < 24; i++) this.burst(VPX + this.px * LW, PY - 80, i % 2 ? 0x7CF7A0 : 0xffe066, 1.2);
-    if (this.route + 1 > this.save.cleared) this.save.cleared = this.route + 1;
+    if (!this.save.seasonCleared) this.save.seasonCleared = [0, 0, 0, 0];
+    const seas = (this.route / LEVELS_PER) | 0, n = this.route % LEVELS_PER;
+    if (this.save.seasonCleared[seas] < n + 1) this.save.seasonCleared[seas] = n + 1;
+    this.save.cleared = totalCleared(this.save);
     if (this.save.unlocked < this.route + 2) this.save.unlocked = Math.min(LEVEL_COUNT, this.route + 2);
     const banked = this.bankCoins();
     const nb = this.recordScore();
-    const last = this.route >= LEVEL_COUNT - 1;
-    this.clearT.setText(last ? 'ALL 40\nTRAILS!' : 'TRAIL\nCLEAR!');
+    const seasonDone = n >= LEVELS_PER - 1;
+    const allDone = this.save.cleared >= LEVEL_COUNT;
+    this.clearT.setText(allDone ? 'ALL 40\nTRAILS!' : 'TRAIL\nCLEAR!');
     this.clearSubT.setText(SEASONS[this.diff.season].name + '  ' + this.diff.stage + '/10\nSCORE  ' + this.score + '\n' + banked + ' acorns banked');
-    this.nextT.setText(last ? 'ALL TRAILS' : 'NEXT TRAIL');
+    this.nextT.setText(allDone ? 'ALL TRAILS' : (seasonDone ? 'SEASONS' : 'NEXT TRAIL'));
     this.showClear(true); this.newBestT.setVisible(nb).setY(700);
     this.hintT.setVisible(false); this.phaseT.setVisible(false);
   }
@@ -1026,15 +1225,21 @@ class RunScene extends Phaser.Scene {
     const sliding = this.slideT > 0 && this.jumpH <= 0.01;
     const jumping = this.jumpH > 20;
     const costume = this.save.equipped || 'classic';
+    const frame = (Math.floor(this.t * 10) % 2 === 0) ? 1 : 2;
     if (this.phase === FROST) {
-      if (sliding) return 'nova-frost-slide';
-      if (jumping) return 'nova-frost-jump';
-      return 'nova-frost-run1';
+      if (sliding) return 'tavi-frost-slide';
+      if (jumping) return 'tavi-frost-jump';
+      const k = 'tavi-frost-run' + frame;
+      return this.textures.exists(k) ? k : 'tavi-frost-run1';
     }
-    if (sliding) return 'nova-ember-slide';
-    if (jumping) return 'nova-ember-jump';
-    if (costume !== 'classic' && this.textures.exists('nova-costume-' + costume)) return 'nova-costume-' + costume;
-    return (Math.floor(this.t * 9) % 2 === 0) ? 'nova-ember-run1' : 'nova-ember-run2';
+    if (costume !== 'classic') {
+      if (sliding && this.textures.exists('tavi-costume-' + costume + '-slide')) return 'tavi-costume-' + costume + '-slide';
+      if (jumping && this.textures.exists('tavi-costume-' + costume + '-jump')) return 'tavi-costume-' + costume + '-jump';
+      if (this.textures.exists('tavi-costume-' + costume)) return 'tavi-costume-' + costume;
+    }
+    if (sliding) return 'tavi-ember-slide';
+    if (jumping) return 'tavi-ember-jump';
+    return frame === 1 ? 'tavi-ember-run1' : 'tavi-ember-run2';
   }
 
   draw() {
@@ -1083,7 +1288,7 @@ class RunScene extends Phaser.Scene {
     if (this.flash > 0) { fx.fillStyle(0xffffff, this.flash * 0.55); fx.fillRect(-40, -40, W + 80, H + 80); }
     if (this.state === 'play') {
       if (this.shields > 0 || this.invuln > 0) {
-        const x = VPX + this.px * LW, y = PY - 70 - this.jumpH;
+        const x = VPX + (this.px - CAMX) * LW, y = PY - 90 - this.jumpH;
         fx.lineStyle(4, this.invuln > 0 ? 0xffffff : 0x7ad7ff, 0.55 + 0.35 * Math.sin(this.t * 8));
         fx.strokeEllipse(x, y, 160, 200);
       }
@@ -1096,7 +1301,7 @@ class RunScene extends Phaser.Scene {
       }
     }
     if (this.state === 'home' || this.state === 'shop' || this.state === 'map' || this.state === 'over' || this.state === 'clear') {
-      const a = (this.state === 'over' || this.state === 'clear') ? Math.min(0.62, 0.38 + this.deadT * 0.5) : (this.state === 'shop' || this.state === 'map' ? 0.42 : 0.28);
+      const a = (this.state === 'over' || this.state === 'clear') ? Math.min(0.62, 0.38 + this.deadT * 0.5) : (this.state === 'shop' || this.state === 'map' ? 0.42 : 0.16);
       fx.fillStyle(0x0b1208, a);
       fx.fillRect(-40, -40, W + 80, H + 80);
     }
@@ -1134,10 +1339,11 @@ class RunScene extends Phaser.Scene {
       if (ty < 0) ty += th;
       const sy = Math.min(th - 1, ty | 0);
       const fade = Math.min(1, rel * 2.8);
+      const mid = VPX - CAMX * LW * s;
       ctx.globalAlpha = fade * 0.8;
-      try { ctx.drawImage(img, 0, sy, tw, 1, VPX - shHalf, y, shHalf * 2, 1.5); } catch (e) {}
+      try { ctx.drawImage(img, 0, sy, tw, 1, mid - shHalf, y, shHalf * 2, 1.5); } catch (e) {}
       ctx.globalAlpha = fade;
-      try { ctx.drawImage(img, 0, sy, tw, 1, VPX - rdHalf, y, rdHalf * 2, 1.5); } catch (e) {}
+      try { ctx.drawImage(img, 0, sy, tw, 1, mid - rdHalf, y, rdHalf * 2, 1.5); } catch (e) {}
     }
     ctx.globalAlpha = 1;
     const grd = ctx.createLinearGradient(0, HY - 8, 0, HY + 110);
@@ -1151,33 +1357,36 @@ class RunScene extends Phaser.Scene {
   }
 
   placePlayer() {
-    const x = VPX + this.px * LW, ground = PY, j = this.jumpH;
+    const x = VPX + (this.px - CAMX) * LW, ground = PY, j = this.jumpH;
     const sliding = this.slideT > 0 && j <= 0.01;
     const key = this.playerKey();
     if (this.playerSpr.texture.key !== key && this.textures.exists(key)) this.playerSpr.setTexture(key);
-    const bob = (j > 0 || sliding) ? 0 : Math.abs(Math.sin(this.t * 16)) * 6;
+    const bob = (j > 0 || sliding) ? 0 : Math.abs(Math.sin(this.t * 16)) * 8;
     const ratio = this.playerSpr.width / Math.max(1, this.playerSpr.height);
     if (this.state === 'home') {
       this.playerSpr.setVisible(true);
-      this.playerSpr.setPosition(VPX, Math.round(H * 0.58));
-      this.playerSpr.setDisplaySize(200 * ratio, 200);
+      this.playerSpr.setRotation(0);
+      this.playerSpr.setPosition(W - 88, 168);
+      this.playerSpr.setDisplaySize(118 * ratio, 118);
       this.playerSpr.setAlpha(1);
     } else if (this.state === 'play') {
       this.playerSpr.setVisible(true);
       this.playerSpr.setPosition(x, ground - j - bob);
-      const h = sliding ? 150 : 250;
+      this.playerSpr.setRotation((this.px - CAMX) * 0.12);
+      const h = sliding ? 200 : 340;
       this.playerSpr.setDisplaySize(h * ratio, h);
       this.playerSpr.setAlpha(this.invuln > 0 ? (0.5 + 0.5 * Math.sin(this.t * 20)) : 1);
     } else {
       this.playerSpr.setVisible(false);
+      this.playerSpr.setRotation(0);
     }
     this.playerSpr.setDepth(15);
     if (this.state === 'play' || this.state === 'home') {
-      const shx = this.state === 'home' ? VPX : x;
-      const shy = this.state === 'home' ? Math.round(H * 0.58) + 8 : ground + 6;
+      const shx = this.state === 'home' ? W - 88 : x;
+      const shy = this.state === 'home' ? 168 + 8 : ground + 8;
       const sh = this.g;
-      sh.fillStyle(0x000000, this.state === 'home' ? 0.28 : 0.32 * Math.max(0.25, 1 - j / 300));
-      sh.fillEllipse(shx, shy, this.state === 'home' ? 90 : 120 * Math.max(0.5, 1 - j / 400), 22);
+      sh.fillStyle(0x000000, this.state === 'home' ? 0.18 : 0.36 * Math.max(0.25, 1 - j / 300));
+      sh.fillEllipse(shx, shy, this.state === 'home' ? 50 : 150 * Math.max(0.5, 1 - j / 400), 24);
     }
   }
 
