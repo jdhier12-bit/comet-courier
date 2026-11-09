@@ -1,4 +1,4 @@
-// Season Shift v2 — SEASON_SHIFT_V2_TAVI
+// Season Shift v2 — SEASON_SHIFT_V2_TAVI_REAR
 // An original trail runner for Joseph. Tavi the tiger cub, Ember & Frost form-shift.
 // All 40 routes share one continuous difficulty curve (kept from v1).
 // Chase-cam: over-the-shoulder view, path running to the horizon.
@@ -13,7 +13,7 @@ const EMBER = 0, FROST = 1;
 const LEVELS_PER = 10, LEVEL_COUNT = 40;
 const PHASE_COL = [0xff6a21, 0x7ad7ff];
 const PHASE_NAME = ['EMBER', 'FROST'];
-const VERSION = 'SEASON_SHIFT_V2_TAVI';
+const VERSION = 'SEASON_SHIFT_V2_TAVI_REAR';
 
 const SEASONS = [
   { name: 'SPRING', short: 'SPRING', hint: 'Blossoms on the meadow trail.',
@@ -290,6 +290,13 @@ const ASSET_KEYS = [
   'tavi-costume-sunglasses','tavi-costume-sunglasses-jump','tavi-costume-sunglasses-slide',
   'tavi-costume-parka','tavi-costume-parka-jump','tavi-costume-parka-slide',
   'tavi-costume-ninja','tavi-costume-ninja-jump','tavi-costume-ninja-slide',
+  'tavi-ember-rear-run1','tavi-ember-rear-run2','tavi-ember-rear-jump','tavi-ember-rear-slide',
+  'tavi-frost-rear-run1','tavi-frost-rear-run2','tavi-frost-rear-jump','tavi-frost-rear-slide',
+  'tavi-costume-scarf-rear-run1','tavi-costume-scarf-rear-run2','tavi-costume-scarf-rear-jump','tavi-costume-scarf-rear-slide',
+  'tavi-costume-raincoat-rear-run1','tavi-costume-raincoat-rear-run2','tavi-costume-raincoat-rear-jump','tavi-costume-raincoat-rear-slide',
+  'tavi-costume-sunglasses-rear-run1','tavi-costume-sunglasses-rear-run2','tavi-costume-sunglasses-rear-jump','tavi-costume-sunglasses-rear-slide',
+  'tavi-costume-parka-rear-run1','tavi-costume-parka-rear-run2','tavi-costume-parka-rear-jump','tavi-costume-parka-rear-slide',
+  'tavi-costume-ninja-rear-run1','tavi-costume-ninja-rear-run2','tavi-costume-ninja-rear-jump','tavi-costume-ninja-rear-slide',
   'obs-log','obs-fence','obs-rock','obs-snowbank','obs-branch','obs-stump',
   'wall-fire','wall-ice','coin-acorn','part-leaf','part-petal'
 ];
@@ -405,7 +412,7 @@ class RunScene extends Phaser.Scene {
     this.phaseT = this.txt(VPX, H - 70, 'EMBER', 34, '#ffb06a');
     this.hintT = this.txt(VPX, H - 30, 'tap to shift form', 20, '#ffffffaa', { strokeThickness: 3 });
     this.livesT = this.txt(30, 118, '', 24, '#ff8a8a').setOrigin(0, 0.5);
-    this.toastT = this.txt(VPX, H - 280, '', 32, '#ffffff').setAlpha(0).setDepth(30);
+    this.toastT = this.txt(VPX, 168, '', 32, '#ffffff').setAlpha(0).setDepth(30);
 
     this.titleT = this.txt(VPX, 92, 'SEASON SHIFT', 62, '#fff4d6', {
       fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif',
@@ -942,7 +949,11 @@ class RunScene extends Phaser.Scene {
     else if (this.route < 2) this.toast('Swipe to change lanes, jump and slide!', 2.2);
     else this.toast('Tap to shift Ember and Frost!', 2.2);
   }
-  toast(s, dur = 1.4) { this.toastT.setText(s).setAlpha(1).setVisible(true); this.toastDur = dur; }
+  toast(s, dur = 1.4) {
+    // In-run toasts sit under the HUD so they never cover Tavi
+    this.toastT.setY(this.state === 'play' ? 168 : (H - 280));
+    this.toastT.setText(s).setAlpha(1).setVisible(true); this.toastDur = dur;
+  }
 
   currentDiff() {
     if (this.endless) {
@@ -1221,25 +1232,33 @@ class RunScene extends Phaser.Scene {
     }
   }
 
+  homeKey() {
+    const costume = this.save.equipped || 'classic';
+    if (costume !== 'classic' && this.textures.exists('tavi-costume-' + costume)) return 'tavi-costume-' + costume;
+    return 'tavi-ember-run1';
+  }
   playerKey() {
+    // In-run sprites are true rear views: Tavi runs away down the trail
     const sliding = this.slideT > 0 && this.jumpH <= 0.01;
     const jumping = this.jumpH > 20;
     const costume = this.save.equipped || 'classic';
     const frame = (Math.floor(this.t * 10) % 2 === 0) ? 1 : 2;
     if (this.phase === FROST) {
-      if (sliding) return 'tavi-frost-slide';
-      if (jumping) return 'tavi-frost-jump';
-      const k = 'tavi-frost-run' + frame;
-      return this.textures.exists(k) ? k : 'tavi-frost-run1';
+      if (sliding) return 'tavi-frost-rear-slide';
+      if (jumping) return 'tavi-frost-rear-jump';
+      const k = 'tavi-frost-rear-run' + frame;
+      return this.textures.exists(k) ? k : 'tavi-frost-rear-run1';
     }
     if (costume !== 'classic') {
-      if (sliding && this.textures.exists('tavi-costume-' + costume + '-slide')) return 'tavi-costume-' + costume + '-slide';
-      if (jumping && this.textures.exists('tavi-costume-' + costume + '-jump')) return 'tavi-costume-' + costume + '-jump';
-      if (this.textures.exists('tavi-costume-' + costume)) return 'tavi-costume-' + costume;
+      if (sliding && this.textures.exists('tavi-costume-' + costume + '-rear-slide')) return 'tavi-costume-' + costume + '-rear-slide';
+      if (jumping && this.textures.exists('tavi-costume-' + costume + '-rear-jump')) return 'tavi-costume-' + costume + '-rear-jump';
+      const run = 'tavi-costume-' + costume + '-rear-run' + frame;
+      if (this.textures.exists(run)) return run;
+      if (this.textures.exists('tavi-costume-' + costume + '-rear-run1')) return 'tavi-costume-' + costume + '-rear-run1';
     }
-    if (sliding) return 'tavi-ember-slide';
-    if (jumping) return 'tavi-ember-jump';
-    return frame === 1 ? 'tavi-ember-run1' : 'tavi-ember-run2';
+    if (sliding) return 'tavi-ember-rear-slide';
+    if (jumping) return 'tavi-ember-rear-jump';
+    return frame === 1 ? 'tavi-ember-rear-run1' : 'tavi-ember-rear-run2';
   }
 
   draw() {
@@ -1359,7 +1378,7 @@ class RunScene extends Phaser.Scene {
   placePlayer() {
     const x = VPX + (this.px - CAMX) * LW, ground = PY, j = this.jumpH;
     const sliding = this.slideT > 0 && j <= 0.01;
-    const key = this.playerKey();
+    const key = (this.state === 'home') ? this.homeKey() : this.playerKey();
     if (this.playerSpr.texture.key !== key && this.textures.exists(key)) this.playerSpr.setTexture(key);
     const bob = (j > 0 || sliding) ? 0 : Math.abs(Math.sin(this.t * 16)) * 8;
     const ratio = this.playerSpr.width / Math.max(1, this.playerSpr.height);
