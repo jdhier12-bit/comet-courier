@@ -1,19 +1,28 @@
-// Season Shift v2 — SEASON_SHIFT_V2_TAVI_REAR
+// Season Shift v2 — SEASON_SHIFT_V2_GATES_CARTOON
 // An original trail runner for Joseph. Tavi the tiger cub, Ember & Frost form-shift.
 // All 40 routes share one continuous difficulty curve (kept from v1).
-// Chase-cam: over-the-shoulder view, path running to the horizon.
+// Controls and colored-gate feel restored from the first Comet Courier build (bec0d71).
+// Cartoon seasons, path sitting on the ground, scenery lining both sides.
 (() => {
 'use strict';
 const W = 720;
 const H = Math.round(Math.min(Math.max(W * (window.innerHeight / Math.max(window.innerWidth, 1)), 1280), 1700));
-const VPX = W / 2, HY = Math.round(H * 0.40), PY = H - 170, LW = 200, D = 18, SPAWNZ = 190;
+const VPX = W / 2, HY = Math.round(H * 0.37), PY = H - 170, LW = 200, D = 22, SPAWNZ = 170;
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 const EMBER = 0, FROST = 1;
 const LEVELS_PER = 10, LEVEL_COUNT = 40;
 const PHASE_COL = [0xff6a21, 0x7ad7ff];
 const PHASE_NAME = ['EMBER', 'FROST'];
-const VERSION = 'SEASON_SHIFT_V2_TAVI_REAR';
+// Painted horizon as a fraction of each backdrop image's height.
+const BG_HORIZON = [0.472, 0.559, 0.548, 0.538];
+const SIDE_KEYS = [
+  ['side-spring-tree', 'side-spring-bush'],
+  ['side-summer-palm', 'side-summer-bush'],
+  ['side-autumn-tree', 'side-autumn-bush'],
+  ['side-winter-pine', 'side-winter-bush']
+];
+const VERSION = 'SEASON_SHIFT_V2_GATES_CARTOON';
 
 const SEASONS = [
   { name: 'SPRING', short: 'SPRING', hint: 'Blossoms on the meadow trail.',
@@ -52,10 +61,9 @@ function lerpColor(c1, c2, t) {
   const r = lerp((c1 >> 16) & 255, (c2 >> 16) & 255, t), g = lerp((c1 >> 8) & 255, (c2 >> 8) & 255, t), b = lerp(c1 & 255, c2 & 255, t);
   return ((r | 0) << 16) | ((g | 0) << 8) | (b | 0);
 }
-let CAMX = 0;
 function proj(lane, z, h = 0) {
   const s = D / (D + Math.max(z, -D + 1));
-  return { x: VPX + (lane - CAMX) * LW * s, y: HY + (PY - HY) * s - h * s, s };
+  return { x: VPX + lane * LW * s, y: HY + (PY - HY) * s - h * s, s };
 }
 
 // One continuous difficulty curve across all 40 levels (index 0..39).
@@ -297,8 +305,10 @@ const ASSET_KEYS = [
   'tavi-costume-sunglasses-rear-run1','tavi-costume-sunglasses-rear-run2','tavi-costume-sunglasses-rear-jump','tavi-costume-sunglasses-rear-slide',
   'tavi-costume-parka-rear-run1','tavi-costume-parka-rear-run2','tavi-costume-parka-rear-jump','tavi-costume-parka-rear-slide',
   'tavi-costume-ninja-rear-run1','tavi-costume-ninja-rear-run2','tavi-costume-ninja-rear-jump','tavi-costume-ninja-rear-slide',
-  'obs-log','obs-fence','obs-rock','obs-snowbank','obs-branch','obs-stump',
-  'wall-fire','wall-ice','coin-acorn','part-leaf','part-petal'
+  'path-spring','path-summer','path-autumn','path-winter',
+  'side-spring-tree','side-spring-bush','side-summer-palm','side-summer-bush',
+  'side-autumn-tree','side-autumn-bush','side-winter-pine','side-winter-bush',
+  'coin-acorn','part-leaf','part-petal'
 ];
 
 class BootScene extends Phaser.Scene {
@@ -315,7 +325,7 @@ class BootScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.load.on('progress', p => { bar.width = 4 + 424 * p; });
     for (const k of ASSET_KEYS) {
-      const ext = k.startsWith('bg-') || k.startsWith('ground-') ? 'jpg' : 'png';
+      const ext = (k.startsWith('bg-') || k.startsWith('ground-') || k.startsWith('path-')) ? 'jpg' : 'png';
       this.load.image(k, 'assets/' + k + '.' + ext);
     }
   }
@@ -366,6 +376,14 @@ class RunScene extends Phaser.Scene {
       2: this.textures.get('ground-autumn').getSourceImage(),
       3: this.textures.get('ground-winter').getSourceImage()
     };
+    this.pathImgs = {
+      0: this.textures.get('path-spring').getSourceImage(),
+      1: this.textures.get('path-summer').getSourceImage(),
+      2: this.textures.get('path-autumn').getSourceImage(),
+      3: this.textures.get('path-winter').getSourceImage()
+    };
+    this.scenery = [];
+    this.makeCartoonTextures();
 
     this.makeUI();
     this.resetRun();
@@ -376,15 +394,19 @@ class RunScene extends Phaser.Scene {
   }
 
   fitBackdrop() {
-    const key = 'bg-' + (SEASONS[this.seasonIndex()] || SEASONS[0]).name.toLowerCase();
+    const si = this.seasonIndex();
+    const key = 'bg-' + (SEASONS[si] || SEASONS[0]).name.toLowerCase();
     if (this.textures.exists(key) && this.bgSpr.texture.key !== key) this.bgSpr.setTexture(key);
-    const tex = this.textures.get(this.bgSpr.texture.key);
-    const src = tex.getSourceImage();
-    // Extra width covers chase-cam pans so the sky never leaves a green gap
-    const scale = Math.max((W + 220) / src.width, (HY + 80) / (src.height * 0.62));
+    const src = this.textures.get(this.bgSpr.texture.key).getSourceImage();
+    const hf = BG_HORIZON[si] || 0.5;
+    // Align the painted horizon with HY so the trail sits on the ground, not up in the sky.
+    const scale = Math.max(W / src.width, HY / Math.max(1, src.height * hf));
+    this.bgSpr.setOrigin(0.5, 0);
     this.bgSpr.setScale(scale);
-    this.bgSpr.y = 0;
-    this.bgSpr.x = VPX - ((this.state === 'play' ? this.camX : 0) || 0) * 36;
+    this.bgSpr.x = VPX;
+    this.bgSpr.y = HY - src.height * hf * scale;
+    const skies = [0x03b5f8, 0x00a2f6, 0xfaa31b, 0x79c8fe];
+    this.cameras.main.setBackgroundColor(skies[si] || 0x03b5f8);
   }
   seasonIndex() {
     if (this.state === 'play' || this.state === 'over' || this.state === 'clear') return (this.diff && this.diff.season) || 0;
@@ -412,14 +434,14 @@ class RunScene extends Phaser.Scene {
     this.phaseT = this.txt(VPX, H - 70, 'EMBER', 34, '#ffb06a');
     this.hintT = this.txt(VPX, H - 30, 'tap to shift form', 20, '#ffffffaa', { strokeThickness: 3 });
     this.livesT = this.txt(30, 118, '', 24, '#ff8a8a').setOrigin(0, 0.5);
-    this.toastT = this.txt(VPX, 168, '', 32, '#ffffff').setAlpha(0).setDepth(30);
+    this.toastT = this.txt(VPX, 168, '', 28, '#ffffff', { wordWrap: { width: 620 } }).setAlpha(0).setDepth(30);
 
     this.titleT = this.txt(VPX, 92, 'SEASON SHIFT', 62, '#fff4d6', {
       fontFamily: 'Palatino, "Palatino Linotype", Georgia, serif',
       strokeThickness: 12
     });
     this.subT = this.txt(VPX, 150, 'Tavi the tiger  ·  Ember & Frost', 24, '#ffe7b0');
-    this.homeHelpT = this.txt(VPX, 190, 'Pick a season. Swipe to run, jump and slide. Tap to shift form.', 18, '#efe6d2', { strokeThickness: 3 });
+    this.homeHelpT = this.txt(VPX, 190, 'Pick a season. Swipe to change lanes. Tap to shift form and run through the colored gates.', 18, '#efe6d2', { strokeThickness: 3, wordWrap: { width: 640 } });
     this.playT = this.txt(VPX, 0, '', 1, '#fff').setVisible(false);
     this.trailsT = this.txt(VPX, 0, '', 1, '#fff').setVisible(false);
     this.shopT = this.txt(VPX, H - 118, 'SHOP', 32, '#fff4d6');
@@ -698,7 +720,7 @@ class RunScene extends Phaser.Scene {
   resetRun() {
     this.recycleAll();
     this.objs = [];
-    this.lane = 0; this.px = 0; this.camX = 0; CAMX = 0;
+    this.lane = 0; this.px = 0;
     this.jumpH = 0; this.jumpV = 0; this.slideT = 0;
     this.phase = EMBER; this.phaseMix = 0; this.phaseCd = 0;
     const d = difficulty(this.endless ? 0 : this.route);
@@ -713,12 +735,16 @@ class RunScene extends Phaser.Scene {
     this.invuln = 0;
     this.coinMul = 1 + 0.5 * (this.save.upgrades.doubleCoins | 0);
     this.magLv = this.save.upgrades.magnet | 0;
+    this.seedScenery();
   }
 
   recycleAll() {
     this.objs.forEach(o => {
       if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
       if (o.sprs) { o.sprs.forEach(s => { s.setVisible(false).setActive(false); }); o.sprs = null; }
+    });
+    (this.scenery || []).forEach(o => {
+      if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
     });
     (this.sprPool || []).forEach(s => { s.setVisible(false).setActive(false); });
   }
@@ -946,8 +972,8 @@ class RunScene extends Phaser.Scene {
     this.setGroup(this.hudItems(), true);
     this.hintT.setVisible(true); this.phaseT.setVisible(true);
     if (this.endless) this.toast('Endless run — how far can you go?', 2.0);
-    else if (this.route < 2) this.toast('Swipe to change lanes, jump and slide!', 2.2);
-    else this.toast('Tap to shift Ember and Frost!', 2.2);
+    else if (this.route < 2) this.toast('Tap to shift and run through colored gates!', 2.4);
+    else this.toast('Swipe lanes · tap to shift form!', 2.0);
   }
   toast(s, dur = 1.4) {
     // In-run toasts sit under the HUD so they never cover Tavi
@@ -986,11 +1012,11 @@ class RunScene extends Phaser.Scene {
     this.rowCount++;
     const r = Math.random(), d = this.currentDiff();
     const lanes = [-1, 0, 1];
-    const season = SEASONS[d.season || 0];
+    // Full-width colored gates — the v1 twist. Same-color is solid; tap to shift and run through.
     if (d.gateChance > 0 && r < d.gateChance && this.rowCount - this.lastGateRow > d.minGateGap) {
       this.lastGateRow = this.rowCount;
-      const ph = Math.random() < 0.7 ? (this.phase ^ 1) : this.phase;
-      this.objs.push({ type: 'gate', lane: 0, z, phase: ph, visual: ph === EMBER ? 'fire' : 'ice' });
+      const ph = Math.random() < 0.7 ? this.phase : this.phase ^ 1;
+      this.objs.push({ type: 'gate', lane: 0, z, phase: ph });
       this.coinLine(this.lane, z + 5, 4, 6);
       return;
     }
@@ -1009,17 +1035,14 @@ class RunScene extends Phaser.Scene {
     const placed = [];
     for (let i = 0; i < n; i++) {
       const q = Math.random();
-      let type, visual, phase;
-      if (q < 0.52) {
-        type = 'low'; visual = season.lows[(Math.random() * season.lows.length) | 0];
-      } else if (q < 0.70) {
-        type = 'high'; visual = 'branch';
-      } else if (q < 0.86 || d.pwallChance <= 0 || Math.random() >= d.pwallChance) {
-        type = 'wall'; visual = (Math.random() < 0.65 ? 'stump' : 'rock');
-      } else {
-        type = 'pwall'; phase = Math.random() < 0.5 ? EMBER : FROST; visual = phase === EMBER ? 'fire' : 'ice';
+      let type, phase;
+      if (q < 0.16) type = 'low';
+      else if (q < 0.28) type = 'high';
+      else {
+        type = 'pwall';
+        phase = (d.pwallChance > 0) ? (Math.random() < 0.5 ? EMBER : FROST) : (Math.random() < 0.5 ? EMBER : FROST);
       }
-      const o = { type, lane: lanes[i], z, visual, phase };
+      const o = { type, lane: lanes[i], z, phase };
       this.objs.push(o);
       placed.push(o);
     }
@@ -1053,11 +1076,8 @@ class RunScene extends Phaser.Scene {
 
     this.dist += spd * dt;
     this.phaseMix = lerp(this.phaseMix, this.phase, Math.min(dt * 8, 1));
+    // v1 feel: lane target is instant, visible position eases at dt*16, no camera lag
     this.px = lerp(this.px, this.lane, Math.min(dt * 16, 1));
-    if (this.camX == null) this.camX = this.px;
-    // Chase-cam lags the runner so lane changes feel like a camera swinging behind Tavi
-    this.camX = lerp(this.camX, this.px, Math.min(dt * 5.2, 1));
-    CAMX = (this.state === 'play') ? this.camX : 0;
     Music.update(dt);
     if (this.jumpH > 0 || this.jumpV > 0) {
       this.jumpV -= 2700 * dt;
@@ -1105,6 +1125,7 @@ class RunScene extends Phaser.Scene {
     } else {
       for (const o of this.objs) o.z -= spd * dt;
     }
+    this.updateScenery(spd, dt);
     this.objs = this.objs.filter(o => {
       const keep = o.z > -14 && !(o.dead && o.type === 'coin');
       if (!keep) {
@@ -1147,10 +1168,11 @@ class RunScene extends Phaser.Scene {
   }
 
   collides(o, pl) {
-    if (o.type === 'gate') return o.phase !== this.phase;
-    if (Math.abs((o.lane || 0) - pl) > 0.45 && o.type !== 'gate') return false;
+    // v1 rule: a wall of your current form is solid; the other form you run through.
+    if (o.type === 'gate') return o.phase === this.phase;
+    if (o.lane !== pl) return false;
     if (o.type === 'wall') return true;
-    if (o.type === 'pwall') return o.phase !== this.phase;
+    if (o.type === 'pwall') return o.phase === this.phase;
     if (o.type === 'low') return this.jumpH < 55;
     if (o.type === 'high') return this.slideT <= 0;
     return false;
@@ -1288,12 +1310,13 @@ class RunScene extends Phaser.Scene {
       g.lineStyle(10 * a.s, 0x7CF7A0, 0.9); g.lineBetween(a.x, a.y, b.x, b.y);
     }
 
-    // objects far-to-near
-    const list = this.objs.filter(o => !o.dead).sort((a, b) => b.z - a.z);
+    // objects + roadside scenery, far-to-near, player interleaved
+    const list = this.objs.filter(o => !o.dead).concat(this.scenery || []).sort((a, b) => b.z - a.z);
     let playerDrawn = false;
     for (const o of list) {
       if (!playerDrawn && o.z < 0) { this.placePlayer(); playerDrawn = true; }
-      this.placeObj(o);
+      if (o.kind === 'scenery') this.placeScenery(o);
+      else this.placeObj(o);
     }
     if (!playerDrawn) this.placePlayer();
     // hide unused pooled sprites
@@ -1307,7 +1330,7 @@ class RunScene extends Phaser.Scene {
     if (this.flash > 0) { fx.fillStyle(0xffffff, this.flash * 0.55); fx.fillRect(-40, -40, W + 80, H + 80); }
     if (this.state === 'play') {
       if (this.shields > 0 || this.invuln > 0) {
-        const x = VPX + (this.px - CAMX) * LW, y = PY - 90 - this.jumpH;
+        const x = VPX + this.px * LW, y = PY - 90 - this.jumpH;
         fx.lineStyle(4, this.invuln > 0 ? 0xffffff : 0x7ad7ff, 0.55 + 0.35 * Math.sin(this.t * 8));
         fx.strokeEllipse(x, y, 160, 200);
       }
@@ -1342,41 +1365,42 @@ class RunScene extends Phaser.Scene {
   drawRoad() {
     const ctx = this.roadCtx;
     ctx.clearRect(0, 0, W, H);
-    const img = this.groundImgs[this.seasonIndex()];
-    if (!img) { this.roadTex.refresh(); return; }
-    const tw = img.width, th = img.height;
+    const si = this.seasonIndex();
+    const ground = this.groundImgs[si], path = this.pathImgs[si];
+    if (!ground) { this.roadTex.refresh(); return; }
+    const tw = ground.width, th = ground.height;
+    const ptw = path ? path.width : tw, pth = path ? path.height : th;
     const off = this.dist * 0.55;
-    const yStart = Math.max(0, HY - 4);
+    const yStart = Math.max(0, HY);
     for (let y = yStart; y < H; y++) {
       const rel = (y - HY) / (PY - HY);
-      if (rel <= 0.002) continue;
+      if (rel <= 0) continue;
       const s = rel;
-      const z = D / s - D;
-      const shHalf = 2.2 * LW * s;
-      const rdHalf = 1.62 * LW * s;
-      let ty = (off + z * 8.8) % th;
-      if (ty < 0) ty += th;
+      const z = D / Math.max(s, 0.001) - D;
+      const pathHalf = 1.5 * LW * s;
+      let ty = (off + z * 8.8) % th; if (ty < 0) ty += th;
       const sy = Math.min(th - 1, ty | 0);
-      const fade = Math.min(1, rel * 2.8);
-      const mid = VPX - CAMX * LW * s;
-      ctx.globalAlpha = fade * 0.8;
-      try { ctx.drawImage(img, 0, sy, tw, 1, mid - shHalf, y, shHalf * 2, 1.5); } catch (e) {}
+      let pty = (off + z * 8.8) % pth; if (pty < 0) pty += pth;
+      const psy = Math.min(pth - 1, pty | 0);
+      // Fade the ground in over a few pixels at the horizon so it sits under the hills, not in the sky.
+      const fade = Math.min(1, (y - HY) / 12);
       ctx.globalAlpha = fade;
-      try { ctx.drawImage(img, 0, sy, tw, 1, mid - rdHalf, y, rdHalf * 2, 1.5); } catch (e) {}
+      try { ctx.drawImage(ground, 0, sy, tw, 1, 0, y, W, 1.5); } catch (e) {}
+      const x0 = VPX - pathHalf, pw = pathHalf * 2;
+      if (pw > 2) {
+        ctx.globalAlpha = fade;
+        try {
+          if (path) ctx.drawImage(path, 0, psy, ptw, 1, x0, y, pw, 1.5);
+          else ctx.drawImage(ground, 0, sy, tw, 1, x0, y, pw, 1.5);
+        } catch (e) {}
+      }
     }
     ctx.globalAlpha = 1;
-    const grd = ctx.createLinearGradient(0, HY - 8, 0, HY + 110);
-    grd.addColorStop(0, 'rgba(0,0,0,1)');
-    grd.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, W, HY + 110);
-    ctx.globalCompositeOperation = 'source-over';
     this.roadTex.refresh();
   }
 
   placePlayer() {
-    const x = VPX + (this.px - CAMX) * LW, ground = PY, j = this.jumpH;
+    const x = VPX + this.px * LW, ground = PY, j = this.jumpH;
     const sliding = this.slideT > 0 && j <= 0.01;
     const key = (this.state === 'home') ? this.homeKey() : this.playerKey();
     if (this.playerSpr.texture.key !== key && this.textures.exists(key)) this.playerSpr.setTexture(key);
@@ -1391,7 +1415,7 @@ class RunScene extends Phaser.Scene {
     } else if (this.state === 'play') {
       this.playerSpr.setVisible(true);
       this.playerSpr.setPosition(x, ground - j - bob);
-      this.playerSpr.setRotation((this.px - CAMX) * 0.12);
+      this.playerSpr.setRotation(0);
       const h = sliding ? 200 : 340;
       this.playerSpr.setDisplaySize(h * ratio, h);
       this.playerSpr.setAlpha(this.invuln > 0 ? (0.5 + 0.5 * Math.sin(this.t * 20)) : 1);
@@ -1417,12 +1441,10 @@ class RunScene extends Phaser.Scene {
     }
     let key = 'coin-acorn';
     if (o.type === 'coin') key = 'coin-acorn';
-    else if (o.visual === 'fire') key = 'wall-fire';
-    else if (o.visual === 'ice') key = 'wall-ice';
-    else if (o.visual) key = 'obs-' + o.visual;
-    else if (o.type === 'high') key = 'obs-branch';
-    else if (o.type === 'wall') key = 'obs-stump';
-    else if (o.type === 'low') key = 'obs-log';
+    else if (o.type === 'gate' || o.type === 'pwall') key = (o.phase === FROST) ? 'gate-frost' : 'gate-ember';
+    else if (o.type === 'high') key = 'obs-bar';
+    else if (o.type === 'low') key = 'obs-hurdle';
+    else key = 'gate-ember';
     if (!o.spr || !o.spr.active) o.spr = this.getSpr(key);
     else if (o.spr.texture.key !== key && this.textures.exists(key)) o.spr.setTexture(key);
     const fade = Math.min(1, (SPAWNZ + 5 - o.z) / 25);
@@ -1437,11 +1459,12 @@ class RunScene extends Phaser.Scene {
       o.spr.setDisplaySize(sz * spin, sz);
       o.spr.setOrigin(0.5, 0.5);
       o.spr.setTint(0xffffff);
+      o.spr.setDepth(15 - o.z);
       return;
     }
     const b = proj(o.lane || 0, o.z);
     if (o.type === 'gate' || o.type === 'pwall') {
-      const solid = o.phase !== this.phase;
+      const solid = o.phase === this.phase;
       const h = 300 * s;
       const tintOn = !solid;
       const placeWall = (spr, lane, width) => {
@@ -1449,10 +1472,10 @@ class RunScene extends Phaser.Scene {
         spr.setOrigin(0.5, 1);
         spr.setPosition(p.x, p.y);
         spr.setDisplaySize(width, h);
-        spr.setAlpha(fade * (solid ? 1 : 0.38));
-        spr.setDepth(10 + (20 - o.z) * 0.05);
+        spr.setAlpha(fade * (solid ? 1 : 0.62));
+        spr.setDepth(15 - o.z);
         spr.setVisible(true).setActive(true);
-        if (tintOn) spr.setTint(0xccffff); else spr.clearTint();
+        spr.clearTint();
       };
       if (o.type === 'gate') {
         if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
@@ -1471,24 +1494,158 @@ class RunScene extends Phaser.Scene {
     if (o.type === 'high') {
       const p = proj(o.lane, o.z, 0);
       o.spr.setOrigin(0.5, 1);
-      o.spr.setPosition(p.x, p.y - 90 * s);
-      o.spr.setDisplaySize(200 * s, 90 * s);
+      o.spr.setPosition(p.x, p.y);
+      o.spr.setDisplaySize(210 * s, 240 * s);
+      o.spr.setDepth(15 - o.z);
       return;
     }
-    // low or wall (stump/rock) sitting on the ground
+    // cartoon jump hurdle sitting on the ground
     const p = proj(o.lane, o.z);
-    o.spr.setOrigin(0.5, 0.92);
+    o.spr.setOrigin(0.5, 0.95);
     o.spr.setPosition(p.x, p.y);
-    if (o.type === 'low') {
-      const isSnow = o.visual === 'snowbank';
-      const isFence = o.visual === 'fence';
-      const bw = (isSnow ? 200 : isFence ? 190 : 175) * s;
-      const bh = (isSnow ? 80 : isFence ? 95 : 70) * s;
-      o.spr.setDisplaySize(bw, bh);
-    } else {
-      const isStump = o.visual === 'stump';
-      o.spr.setDisplaySize((isStump ? 160 : 170) * s, (isStump ? 230 : 180) * s);
+    o.spr.setDisplaySize(200 * s, 90 * s);
+    o.spr.setDepth(15 - o.z);
+  }
+
+  makeCartoonTextures() {
+    const add = (key, w, h, paint) => {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      paint(c.getContext('2d'), w, h);
+      if (this.textures.exists(key)) this.textures.remove(key);
+      this.textures.addCanvas(key, c);
+    };
+    const round = (ctx, x, y, w, h, r) => {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    };
+    const paintGate = (ctx, w, h, col, light, emblem) => {
+      ctx.clearRect(0, 0, w, h);
+      round(ctx, 8, 8, w - 16, h - 16, 28);
+      ctx.fillStyle = col; ctx.fill();
+      ctx.save();
+      ctx.clip();
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = light;
+      for (let i = 0; i < 8; i++) ctx.fillRect(0, 20 + i * 70, w, 18);
+      ctx.restore();
+      ctx.lineWidth = 10; ctx.strokeStyle = '#ffffff';
+      round(ctx, 8, 8, w - 16, h - 16, 28); ctx.stroke();
+      ctx.lineWidth = 6; ctx.strokeStyle = light;
+      round(ctx, 18, 18, w - 36, h - 36, 22); ctx.stroke();
+      const cx = w / 2, cy = h * 0.42, R = 54;
+      ctx.fillStyle = '#ffffff';
+      if (emblem === 'flame') {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - R);
+        ctx.bezierCurveTo(cx + R * 0.9, cy - R * 0.2, cx + R * 0.55, cy + R * 0.6, cx, cy + R);
+        ctx.bezierCurveTo(cx - R * 0.55, cy + R * 0.6, cx - R * 0.9, cy - R * 0.2, cx, cy - R);
+        ctx.fill();
+        ctx.fillStyle = light;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - R * 0.15);
+        ctx.bezierCurveTo(cx + R * 0.4, cy + R * 0.1, cx + 8, cy + R * 0.55, cx, cy + R * 0.65);
+        ctx.bezierCurveTo(cx - 8, cy + R * 0.55, cx - R * 0.4, cy + R * 0.1, cx, cy - R * 0.15);
+        ctx.fill();
+      } else {
+        ctx.beginPath(); ctx.arc(cx, cy, R * 0.85, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 8;
+        for (let i = 0; i < 6; i++) {
+          const a = i * Math.PI / 3;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + Math.cos(a) * R * 1.15, cy + Math.sin(a) * R * 1.15);
+          ctx.stroke();
+        }
+        ctx.fillStyle = light;
+        ctx.beginPath(); ctx.arc(cx, cy, R * 0.28, 0, Math.PI * 2); ctx.fill();
+      }
+    };
+    add('gate-ember', 256, 512, (ctx, w, h) => paintGate(ctx, w, h, '#ff6a21', '#ffd27a', 'flame'));
+    add('gate-frost', 256, 512, (ctx, w, h) => paintGate(ctx, w, h, '#3ec7ff', '#d8f6ff', 'flake'));
+    add('obs-hurdle', 256, 128, (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#3a3a55';
+      ctx.fillRect(18, 20, 16, h - 24); ctx.fillRect(w - 34, 20, 16, h - 24);
+      ctx.fillStyle = '#ff4d6d'; ctx.fillRect(18, 16, w - 36, 36);
+      ctx.fillStyle = '#ffffff';
+      for (let i = 0; i < 4; i++) if (i % 2) ctx.fillRect(18 + i * (w - 36) / 4, 16, (w - 36) / 4, 36);
+      ctx.fillStyle = 'rgba(255,77,109,0.28)'; ctx.fillRect(18, 52, w - 36, h - 70);
+    });
+    add('obs-bar', 256, 280, (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#3a3a55';
+      ctx.fillRect(16, 0, 18, h); ctx.fillRect(w - 34, 0, 18, h);
+      ctx.fillStyle = 'rgba(80,255,160,0.22)'; ctx.fillRect(16, 8, w - 32, h * 0.55);
+      ctx.fillStyle = '#3dff8a'; ctx.fillRect(16, 12, w - 32, 18);
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(16, 18, w - 32, 6);
+      ctx.fillStyle = '#3dff8a'; ctx.fillRect(16, h * 0.52, w - 32, 14);
+    });
+  }
+
+  seedScenery() {
+    if (this.scenery) {
+      this.scenery.forEach(o => { if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; } });
     }
+    this.scenery = [];
+    const keys = SIDE_KEYS[this.seasonIndex()] || SIDE_KEYS[0];
+    let z = 8;
+    while (z < SPAWNZ + 40) {
+      for (const side of [-1, 1]) {
+        const key = keys[(Math.random() < 0.62) ? 0 : 1];
+        const lane = side * (1.72 + Math.random() * 1.15);
+        const tall = key.indexOf('bush') >= 0 ? 260 + Math.random() * 90 : 520 + Math.random() * 160;
+        this.scenery.push({ kind: 'scenery', key, lane, z: z + Math.random() * 3, tall, flip: side > 0 });
+      }
+      z += 6 + Math.random() * 5;
+    }
+  }
+  updateScenery(spd, dt) {
+    if (!this.scenery) return;
+    const keys = SIDE_KEYS[this.seasonIndex()] || SIDE_KEYS[0];
+    let maxZ = 0;
+    for (const o of this.scenery) {
+      o.z -= spd * dt;
+      if (o.z > maxZ) maxZ = o.z;
+    }
+    for (const o of this.scenery) {
+      if (o.z > -16) continue;
+      if (o.spr) { o.spr.setVisible(false).setActive(false); o.spr = null; }
+      const key = keys[(Math.random() < 0.62) ? 0 : 1];
+      const side = Math.random() < 0.5 ? -1 : 1;
+      o.key = key; o.lane = side * (1.72 + Math.random() * 1.15);
+      o.z = Math.max(SPAWNZ, maxZ) + 8 + Math.random() * 6;
+      o.tall = key.indexOf('bush') >= 0 ? 260 + Math.random() * 90 : 520 + Math.random() * 160;
+      o.flip = side > 0;
+      maxZ = o.z;
+    }
+  }
+  placeScenery(o) {
+    if (this.state === 'shop' || this.state === 'map') {
+      if (o.spr) o.spr.setVisible(false);
+      return;
+    }
+    const p = proj(o.lane, o.z);
+    if (p.y < HY - 10 || p.x < -280 || p.x > W + 280) {
+      if (o.spr) o.spr.setVisible(false);
+      return;
+    }
+    if (!o.spr || !o.spr.active) o.spr = this.getSpr(o.key);
+    else if (o.spr.texture.key !== o.key && this.textures.exists(o.key)) o.spr.setTexture(o.key);
+    const fade = Math.min(1, (SPAWNZ + 8 - o.z) / 22);
+    const h = o.tall * p.s;
+    const ratio = o.spr.width / Math.max(1, o.spr.height);
+    o.spr.setOrigin(0.5, 1);
+    o.spr.setPosition(p.x, p.y + 6 * p.s);
+    o.spr.setDisplaySize((o.flip ? -1 : 1) * h * ratio, h);
+    o.spr.setAlpha(fade);
+    o.spr.setDepth(15 - o.z);
+    o.spr.setVisible(true).setActive(true);
   }
 
   drawWeather(fx) {
