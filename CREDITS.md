@@ -31,12 +31,9 @@ runner) names, art, or assets.
 
 ## Character
 
-- **Pip the penguin** is based on “Penguin” from the Pixor library by Frakassets,
-  licensed CC0 1.0 (public domain). The source model is a rigged, low-poly penguin
-  with a waddle cycle. A fitted hoodie, extra clips (Run, Idle, Jump, Slide), and
-  in-game tinting were added for Season Shift.
-  https://pixor.art/library/creatures/penguin/
-  License: https://creativecommons.org/publicdomain/zero/1.0/
+- **The panda** is an original stylized giant panda sculpted, rigged, and
+  animated in Blender for Season Shift. No third-party 3D model was used as a base.
+  See `assets/models/LICENSE-panda.txt`.
 
 ## Everything else
 

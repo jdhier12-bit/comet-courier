@@ -1,0 +1,12 @@
+Original stylized giant panda character for Season Shift.
+
+Created in Blender 5.2 from an original metaball-to-mesh sculpt, armature,
+and animation set. No third-party 3D model was used as a base.
+
+Free professionally licensed panda models considered and not used:
+- Quaternius "Panda" (CC0, Poly Pizza) — faceted low-poly, skipped per art direction
+- Grab3D "Panda" (CC0) — 400k–800k triangle static photoreal quadruped, unrigged, too heavy
+- Sketchfab cartoon pandas — download required an account, which was not created
+
+This original character is delivered for use in the Season Shift / Comet Courier
+App Store game. Joseph H may use, modify, and ship it commercially.

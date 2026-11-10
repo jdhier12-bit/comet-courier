@@ -1,16 +1,16 @@
-// Season Shift v4.2 — SEASON_SHIFT_V4_2
-// An original 3D endless runner for Joseph. Pip the penguin, Bloom & Aurora.
+// Season Shift v4.3 — SEASON_SHIFT_V4_3
+// An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, tilt lanes, swipe jump-slide-turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_2';
+const VERSION = 'SEASON_SHIFT_V4_3';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
 // Character model is isolated so it can be swapped after Joseph approves a new one.
-// Do not point this at pip-v4.glb or pip-v5.glb until he approves them.
-const CHARACTER_MODEL = './assets/models/pip.glb';
+// Do not ship pip-v4.glb, pip-v5.glb, or pip-red-panda.glb to Pages or the iOS zip.
+const CHARACTER_MODEL = './assets/models/panda.glb';
 const CHARACTER_HEIGHT = 1.0;
 
 const BLOOM = 0, AURORA = 1;
@@ -733,7 +733,7 @@ class PathSystem {
   }
 }
 
-// ---------------- penguin ----------------
+// ---------------- character (panda) ----------------
 class Penguin {
   constructor() {
     this.root = new THREE.Group();
@@ -872,8 +872,14 @@ class Penguin {
         if (!m) return;
         m.roughness = m.roughness != null ? Math.min(0.85, m.roughness + 0.08) : 0.6;
         m.metalness = 0;
-        this._applyRim(m);
         const n = (m.name || '').toLowerCase();
+        // Bloom/Aurora is a rim on the white fur only — never a body tint, and black stays black.
+        if (n === 'body') this._applyRim(m);
+        if (n === 'furblack' || n === 'black') {
+          if (m.color) m.color.setHex(0x0a0a0a);
+          m.roughness = Math.max(m.roughness || 0, 0.86);
+          if (m.emissive) { m.emissive.setHex(0x000000); m.emissiveIntensity = 0; }
+        }
         if (n === 'hoodie') this.hoodieMats.push(m);
         else if (n === 'hoodietrim' || n === 'hoodiestring') this.trimMats.push(m);
         else if (n === 'hoodiepatch') this.patchMats.push(m);
@@ -885,7 +891,12 @@ class Penguin {
     for (const clip of gltf.animations || []) {
       const act = this.mixer.clipAction(clip);
       act.enabled = true;
-      act.setLoop(THREE.LoopRepeat, Infinity);
+      if (clip.name === 'TurnL' || clip.name === 'TurnR') {
+        act.setLoop(THREE.LoopOnce, 1);
+        act.clampWhenFinished = true;
+      } else {
+        act.setLoop(THREE.LoopRepeat, Infinity);
+      }
       this.actions[clip.name] = act;
     }
     this._buildAccessories();
@@ -1043,8 +1054,13 @@ class Penguin {
       if (ev.falling) clip = this.actions.Fall ? 'Fall' : 'Jump';
       else if (ev.sliding) clip = 'Slide';
       else if (ev.jumpY > 0.02) clip = 'Jump';
+      else if (ev.turning && ev.turnDir < 0 && this.actions.TurnL) clip = 'TurnL';
+      else if (ev.turning && this.actions.TurnR) clip = 'TurnR';
       else if (ev.moving || ev.idleRun) clip = 'Run';
-      this._play(clip, ev.sliding || ev.jumpY > 0.02 ? 0.08 : 0.16);
+      this._play(clip, ev.sliding || ev.jumpY > 0.02 || ev.turning ? 0.08 : 0.16);
+      if ((clip === 'TurnL' || clip === 'TurnR') && this.actions[clip]) {
+        this.actions[clip].timeScale = 2.2;
+      }
       if (this.actions.Run) {
         this.actions.Run.timeScale = ev.idleRun ? 0.85 : (0.75 + spd * 0.055);
       }
@@ -1886,7 +1902,7 @@ class TiltSteer {
       if (ev.gamma == null) return;
       this.hasDevice = true;
       this._lastEvt = performance.now();
-      // Portrait: gamma is left/right tilt. Tilting the phone right should move Pip right (lane +1).
+      // Portrait: gamma is left/right tilt. Tilting the phone right should move the runner right (lane +1).
       this.raw = ev.gamma;
       if (!this.calibrated) { this.neutral = this.raw; this.calibrated = true; }
     });
@@ -2776,6 +2792,8 @@ class Game {
       jumpY: Math.max(0, this.jumpY),
       sliding: this.slideT > 0 && this.jumpY <= 0.02,
       lean: this.lean + this.turnLean,
+      turning: !!(this.snap && this.snap.t < this.snap.dur),
+      turnDir: this.snap ? this.snap.dir : 0,
       falling: dying || (this.offPath && this.jumpY < 0.1),
       fallT: this.deadT,
       onGround: this.jumpY <= 0.02,
@@ -2900,7 +2918,7 @@ class Game {
       fov = 52 + speedK * 8 + this.fovKick;
     }
     const side = home ? 1.85 : 0;
-    // Camera tracks a lagged lane offset so Pip visibly moves into a lane (screen-right is +lane).
+    // Camera tracks a lagged lane offset so the runner visibly moves into a lane (screen-right is +lane).
     const camLat = this.camX;
     const lookLat = this.camX * 0.2 + this.px * 0.8;
     const cx = this.wx - v.sx * this.px - v.fx * dist + v.sx * (camLat + side + shx);
