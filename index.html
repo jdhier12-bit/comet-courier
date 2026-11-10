@@ -11,7 +11,7 @@
 <title>Season Shift</title>
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
-<!-- SEASON_SHIFT_V3_3D -->
+<!-- SEASON_SHIFT_V3_1 -->
 <style>
 @font-face{font-family:Fredoka;font-style:normal;font-weight:600;font-display:swap;
   src:url('assets/fonts/fredoka-latin-600-normal.woff2') format('woff2'),
@@ -47,10 +47,17 @@ html,body,#app{margin:0;padding:0;width:100%;height:100%;overflow:hidden;backgro
   font-weight:700;font-size:22px;box-shadow:0 8px 22px rgba(0,0,0,.22)}
 .coin-dot{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff4b0,#ffd23f 45%,#e0a000);
   box-shadow:0 0 0 3px rgba(255,210,63,.25)}
-#brand{margin-top:72px;text-align:center;text-shadow:0 3px 0 rgba(0,0,0,.25),0 10px 28px rgba(0,0,0,.35);pointer-events:none}
-#brand .logo{font-weight:700;font-size:18px;letter-spacing:.22em;opacity:.9}
-#season-name{margin-top:4px;font-weight:700;font-size:64px;line-height:1;letter-spacing:.02em}
-#season-tag{margin-top:4px;font-weight:600;font-size:20px;opacity:.92}
+#season-viewport{margin-top:72px;width:100%;overflow:hidden;pointer-events:none}
+#season-track{display:flex;width:400%;will-change:transform}
+.season-panel{width:25%;flex:none;text-align:center;text-shadow:0 3px 0 rgba(0,0,0,.25),0 10px 28px rgba(0,0,0,.35)}
+.season-panel .logo{font-weight:700;font-size:18px;letter-spacing:.22em;opacity:.9}
+.season-panel .nm{margin-top:4px;font-weight:700;font-size:64px;line-height:1;letter-spacing:.02em}
+.season-panel .tag{margin-top:4px;font-weight:600;font-size:20px;opacity:.92}
+#countdown{position:absolute;inset:0;display:grid;place-items:center;align-content:start;padding-top:22vh;pointer-events:none;z-index:4}
+#countdown span{font-weight:700;font-size:120px;letter-spacing:.04em;text-shadow:0 4px 0 rgba(0,0,0,.3),0 14px 32px rgba(0,0,0,.4);
+  transform:scale(.8);opacity:0;transition:transform .18s ease,opacity .18s ease}
+#countdown span.show{transform:scale(1);opacity:1}
+#countdown.hidden span{opacity:0}
 #home-bottom{margin-top:auto;width:100%;display:flex;flex-direction:column;align-items:center;padding-bottom:8px}
 #dots{display:flex;gap:10px;margin:0 0 12px;position:relative;z-index:3}
 #dots span{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.45);box-shadow:0 0 0 3px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.35);transition:all .2s}
@@ -122,10 +129,13 @@ html,body,#app{margin:0;padding:0;width:100%;height:100%;overflow:hidden;backgro
         <button class="icon-btn hit" id="btn-mute" aria-label="Music">♪</button>
         <div class="coin-pill"><span class="coin-dot"></span><span id="home-coins">0</span></div>
       </div>
-      <div id="brand">
-        <div class="logo">SEASON SHIFT</div>
-        <div id="season-name">SPRING</div>
-        <div id="season-tag">Blossom Trails</div>
+      <div id="season-viewport">
+        <div id="season-track">
+          <div class="season-panel"><div class="logo">SEASON SHIFT</div><div class="nm">SPRING</div><div class="tag">Blossom Trails</div></div>
+          <div class="season-panel"><div class="logo">SEASON SHIFT</div><div class="nm">SUMMER</div><div class="tag">Shoreline Dash</div></div>
+          <div class="season-panel"><div class="logo">SEASON SHIFT</div><div class="nm">AUTUMN</div><div class="tag">Amber Woods</div></div>
+          <div class="season-panel"><div class="logo">SEASON SHIFT</div><div class="nm">WINTER</div><div class="tag">Frosty Lane</div></div>
+        </div>
       </div>
       <div id="home-bottom">
         <div id="dots"><span class="on"></span><span></span><span></span><span></span></div>
@@ -139,6 +149,7 @@ html,body,#app{margin:0;padding:0;width:100%;height:100%;overflow:hidden;backgro
       <div id="hud-coins"><span class="coin-dot"></span><span id="hud-coin-n">0</span></div>
       <div id="hud-form">EMBER</div>
     </div>
+    <div id="countdown" class="hidden"><span>3</span></div>
     <div id="toast"></div>
     <div id="shop" class="hidden">
       <div class="sheet">

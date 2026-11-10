@@ -1,14 +1,15 @@
-// Season Shift v3 — SEASON_SHIFT_V3_3D
+// Season Shift v3.1 — SEASON_SHIFT_V3_1
 // An original 3D endless runner for Joseph. Pip the hoodie penguin, Ember & Frost.
 import * as THREE from './lib/three.module.min.js';
 
-const VERSION = 'SEASON_SHIFT_V3_3D';
+const VERSION = 'SEASON_SHIFT_V3_1';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 const EMBER = 0, FROST = 1;
 const PHASE_COL = [0xff6a21, 0x7ad7ff];
 const PHASE_NAME = ['EMBER', 'FROST'];
 const LANE_W = 1.7;
+function laneX(lane) { return -lane * LANE_W; }
 const SPAWN_AHEAD = 72;
 const WARMUP = 28;
 const MAX_DT = 0.05;
@@ -129,27 +130,63 @@ function saveSave(s) {
 // ---------------- audio ----------------
 const Sfx = {
   ctx: null,
+  master: null,
+  _noise: null,
   unlock() {
     if (!this.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) this.ctx = new AC();
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.28; // sit under the season music
+      this.master.connect(this.ctx.destination);
+      const n = this.ctx.sampleRate * 0.4;
+      const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      this._noise = buf;
     }
     if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
   },
-  tone(f1, f2, dur, type = 'square', vol = 0.08) {
+  _out() { return this.master || (this.ctx && this.ctx.destination); },
+  tone(f1, f2, dur, type = 'square', vol = 0.1, delay = 0) {
     const c = this.ctx; if (!c || c.state !== 'running') return;
-    const o = c.createOscillator(), g = c.createGain(), t = c.currentTime;
+    const o = c.createOscillator(), g = c.createGain(), t = c.currentTime + delay;
     o.type = type; o.frequency.setValueAtTime(f1, t);
     o.frequency.exponentialRampToValueAtTime(Math.max(f2, 1), t + dur);
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + dur + 0.02);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this._out()); o.start(t); o.stop(t + dur + 0.03);
   },
-  coin() { this.tone(880, 1760, 0.12, 'triangle', 0.09); },
-  jump() { this.tone(300, 700, 0.18, 'sine', 0.1); },
-  slide() { this.tone(400, 150, 0.18, 'sawtooth', 0.04); },
-  lane() { this.tone(500, 560, 0.05, 'sine', 0.05); },
-  phase(p) { p ? this.tone(900, 300, 0.25, 'sine', 0.1) : this.tone(300, 900, 0.25, 'sine', 0.1); },
-  hit() { this.tone(220, 40, 0.5, 'sawtooth', 0.15); }
+  whoosh(dur, vol, fFrom, fTo) {
+    const c = this.ctx; if (!c || c.state !== 'running' || !this._noise) return;
+    const src = c.createBufferSource(); src.buffer = this._noise;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(fFrom, c.currentTime);
+    bp.frequency.exponentialRampToValueAtTime(Math.max(fTo, 80), c.currentTime + dur);
+    bp.Q.value = 0.8;
+    const g = c.createGain(); const t = c.currentTime;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(bp); bp.connect(g); g.connect(this._out());
+    src.start(t); src.stop(t + dur + 0.02);
+  },
+  coin() {
+    this.tone(988, 1318, 0.09, 'triangle', 0.16);
+    this.tone(1318, 1976, 0.14, 'triangle', 0.12, 0.05);
+    this.tone(1976, 2638, 0.08, 'sine', 0.06, 0.09);
+  },
+  jump() {
+    this.tone(220, 620, 0.11, 'sine', 0.16);
+    this.tone(620, 280, 0.16, 'sine', 0.1, 0.08);
+  },
+  slide() { this.whoosh(0.18, 0.22, 900, 220); this.tone(340, 140, 0.16, 'sine', 0.05); },
+  lane() { this.whoosh(0.1, 0.2, 700, 1100); this.tone(520, 640, 0.06, 'sine', 0.05); },
+  phase(p) { p ? this.tone(880, 280, 0.22, 'sine', 0.12) : this.tone(280, 880, 0.22, 'sine', 0.12); this.whoosh(0.14, 0.12, 400, 1400); },
+  hit() { this.tone(180, 50, 0.4, 'sawtooth', 0.14); this.whoosh(0.28, 0.22, 300, 80); },
+  tick() { this.tone(760, 760, 0.08, 'square', 0.07); },
+  go() { this.tone(523, 784, 0.16, 'triangle', 0.12); this.tone(784, 1046, 0.18, 'triangle', 0.1, 0.08); }
 };
 
 class Music {
@@ -215,26 +252,53 @@ function std(color, extra = {}) {
     color, roughness: 0.58, metalness: 0.0
   }, extra));
 }
+let _toonRamp = null;
+function toonRamp() {
+  if (_toonRamp) return _toonRamp;
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 1;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 4, 0);
+  g.addColorStop(0, '#606060');
+  g.addColorStop(0.35, '#9a9a9a');
+  g.addColorStop(0.7, '#d0d0d0');
+  g.addColorStop(1, '#ffffff');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 1);
+  const tex = new THREE.CanvasTexture(c);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  _toonRamp = tex;
+  return tex;
+}
+function toon(color, extra = {}) {
+  return new THREE.MeshToonMaterial(Object.assign({
+    color, gradientMap: toonRamp()
+  }, extra));
+}
 function geoCache() {
   return {
-    sphere: new THREE.SphereGeometry(1, 18, 14),
-    sphereLo: new THREE.SphereGeometry(1, 12, 9),
+    sphere: new THREE.SphereGeometry(1, 20, 16),
+    sphereLo: new THREE.SphereGeometry(1, 14, 10),
+    sphereMid: new THREE.SphereGeometry(1, 16, 12),
     ico: new THREE.IcosahedronGeometry(1, 1),
     icoLo: new THREE.IcosahedronGeometry(1, 0),
-    capBody: new THREE.CapsuleGeometry(0.34, 0.28, 8, 18),
-    capHead: new THREE.SphereGeometry(0.22, 18, 14),
-    capLeg: new THREE.CapsuleGeometry(0.075, 0.14, 6, 10),
+    capBody: new THREE.CapsuleGeometry(0.26, 0.20, 8, 16),
+    capHead: new THREE.SphereGeometry(0.30, 22, 16),
+    capLeg: new THREE.CapsuleGeometry(0.07, 0.12, 6, 10),
     foot: new THREE.SphereGeometry(0.13, 12, 8),
-    flipper: new THREE.CapsuleGeometry(0.075, 0.32, 6, 10),
-    beak: new THREE.ConeGeometry(0.08, 0.18, 8),
-    cyl: new THREE.CylinderGeometry(1, 1, 1, 10),
-    cylTaper: new THREE.CylinderGeometry(0.12, 0.22, 1.6, 8),
-    cone: new THREE.ConeGeometry(1, 1, 8),
+    flipper: new THREE.CapsuleGeometry(0.06, 0.26, 6, 12),
+    beak: new THREE.ConeGeometry(0.09, 0.22, 10),
+    cyl: new THREE.CylinderGeometry(1, 1, 1, 12),
+    cylTaper: new THREE.CylinderGeometry(0.12, 0.22, 1.6, 12),
+    cone: new THREE.ConeGeometry(1, 1, 14),
+    frond: new THREE.SphereGeometry(0.5, 12, 8),
     box: new THREE.BoxGeometry(1, 1, 1),
     coin: new THREE.CylinderGeometry(0.22, 0.22, 0.06, 20),
     coinI: new THREE.TorusGeometry(0.22, 0.035, 8, 20),
     plane: new THREE.PlaneGeometry(1, 1, 1, 1),
-    hood: new THREE.SphereGeometry(0.26, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.7),
+    hood: new THREE.SphereGeometry(0.34, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.52),
     daisy: new THREE.CircleGeometry(0.12, 8),
     streak: new THREE.BoxGeometry(0.03, 0.03, 1.4)
   };
@@ -422,128 +486,116 @@ class Penguin {
 
   _build() {
     const g = this.geo;
-    // hips / legs
+    // Short legs, big slappy orange feet
     this.legL = new THREE.Group(); this.legR = new THREE.Group();
-    this.legL.position.set(-0.13, 0.30, 0);
-    this.legR.position.set(0.13, 0.30, 0);
+    this.legL.position.set(-0.11, 0.26, 0);
+    this.legR.position.set(0.11, 0.26, 0);
     this.bodyG.add(this.legL, this.legR);
-    this._mesh(g.capLeg, this.mFur, this.legL, 0, -0.1, 0);
-    this._mesh(g.capLeg, this.mFur, this.legR, 0, -0.1, 0);
+    this._mesh(g.capLeg, this.mFur, this.legL, 0, -0.08, 0);
+    this._mesh(g.capLeg, this.mFur, this.legR, 0, -0.08, 0);
     this.footL = new THREE.Group(); this.footR = new THREE.Group();
-    this.footL.position.set(0, -0.22, 0.04);
-    this.footR.position.set(0, -0.22, 0.04);
+    this.footL.position.set(0, -0.20, 0.05);
+    this.footR.position.set(0, -0.20, 0.05);
     this.legL.add(this.footL); this.legR.add(this.footR);
-    // webbed feet: oval + three toe bumps
-    const fl = this._mesh(g.foot, this.mFoot, this.footL, 0, 0, 0.07, 1.35, 0.48, 2.05);
-    const fr = this._mesh(g.foot, this.mFoot, this.footR, 0, 0, 0.07, 1.35, 0.48, 2.05);
+    this._mesh(g.foot, this.mFoot, this.footL, 0, 0, 0.08, 1.45, 0.42, 2.15);
+    this._mesh(g.foot, this.mFoot, this.footR, 0, 0, 0.08, 1.45, 0.42, 2.15);
     for (const foot of [this.footL, this.footR]) {
-      for (const ox of [-0.07, 0, 0.07]) this._mesh(g.foot, this.mFoot, foot, ox, 0, 0.16, 0.4, 0.28, 0.55);
+      for (const ox of [-0.08, 0, 0.08]) this._mesh(g.foot, this.mFoot, foot, ox, 0.01, 0.2, 0.42, 0.28, 0.6);
     }
 
-    // torso (hoodie)
+    // Compact torso: BLACK back, WHITE belly, short hoodie on top
     this.torso = new THREE.Group();
-    this.torso.position.y = 0.58;
+    this.torso.position.y = 0.52;
     this.bodyG.add(this.torso);
-    this.hoodie = this._mesh(g.capBody, this.mHoodie, this.torso, 0, 0, 0);
-    // hem
-    this.hem = this._mesh(g.cyl, this.mTrim, this.torso, 0, -0.32, 0, 0.355, 0.08, 0.355);
-    this._mesh(g.sphere, this.mHoodie, this.torso, 0, -0.30, 0, 0.36, 0.14, 0.32);
-    // back patch (visible from camera)
-    this.patch = this._mesh(g.sphere, this.mPatch, this.torso, 0, 0.06, -0.33, 0.09, 0.10, 0.045);
-    // pocket hint on sides slightly
-    this._mesh(g.box, this.mTrim, this.torso, 0, -0.12, 0.22, 0.28, 0.14, 0.06);
+    this.body = this._mesh(g.capBody, this.mFur, this.torso, 0, -0.02, 0, 1, 1, 0.95);
+    // white belly wrapping the front and sides
+    this.belly = this._mesh(g.sphere, this.mBelly, this.torso, 0, -0.04, 0.14, 0.22, 0.26, 0.16);
+    // short hoodie garment (doesn't swallow the head)
+    this.hoodie = this._mesh(g.capBody, this.mHoodie, this.torso, 0, -0.05, 0.03, 1.16, 0.84, 1.12);
+    this.hem = this._mesh(g.cyl, this.mTrim, this.torso, 0, -0.24, 0, 0.30, 0.07, 0.30);
+    this._mesh(g.cyl, this.mTrim, this.torso, 0, 0.16, 0, 0.24, 0.06, 0.24); // collar
+    this.patch = this._mesh(g.sphere, this.mPatch, this.torso, 0, 0.02, -0.26, 0.07, 0.08, 0.04);
+    // small tail under the hem
+    this.tail = this._mesh(g.sphere, this.mFur, this.torso, 0, -0.26, -0.24, 0.07, 0.055, 0.09);
 
-    // belly peek at hem front
-    this._mesh(g.sphere, this.mBelly, this.torso, 0, -0.16, 0.16, 0.2, 0.16, 0.12);
-
-    // tail nub (very visible from behind)
-    this.tail = this._mesh(g.sphere, this.mFur, this.torso, 0, -0.34, -0.34, 0.06, 0.045, 0.07);
-
-    // arms
+    // Arms: colored sleeves + BLACK flippers that clearly poke out
     this.armL = new THREE.Group(); this.armR = new THREE.Group();
-    this.armL.position.set(-0.36, 0.06, 0);
-    this.armR.position.set(0.36, 0.06, 0);
+    this.armL.position.set(-0.28, 0.08, 0);
+    this.armR.position.set(0.28, 0.08, 0);
     this.torso.add(this.armL, this.armR);
-    this._mesh(g.flipper, this.mHoodie, this.armL, -0.04, -0.20, 0);
-    this._mesh(g.flipper, this.mHoodie, this.armR, 0.04, -0.20, 0);
-    // flipper tips (black, sticking out of sleeves)
-    this._mesh(g.sphere, this.mFur, this.armL, -0.04, -0.40, 0.01, 0.09, 0.07, 0.12);
-    this._mesh(g.sphere, this.mFur, this.armR, 0.04, -0.40, 0.01, 0.09, 0.07, 0.12);
+    this._mesh(g.flipper, this.mHoodie, this.armL, -0.03, -0.12, 0, 1.05, 0.7, 1.05);
+    this._mesh(g.flipper, this.mHoodie, this.armR, 0.03, -0.12, 0, 1.05, 0.7, 1.05);
+    this._mesh(g.flipper, this.mFur, this.armL, -0.03, -0.30, 0.02, 0.9, 0.85, 1.15);
+    this._mesh(g.flipper, this.mFur, this.armR, 0.03, -0.30, 0.02, 0.9, 0.85, 1.15);
 
-    // neck / head
+    // BIG black head sitting above the hoodie
     this.headG = new THREE.Group();
-    this.headG.position.set(0, 0.36, 0.04);
+    this.headG.position.set(0, 0.42, 0.06);
     this.torso.add(this.headG);
-    this.head = this._mesh(g.capHead, this.mFur, this.headG, 0, 0, 0);
-    // cheeks + eyes + beak (mostly hidden from rear, still built for 3/4 views)
-    this._mesh(g.sphere, this.mBlush, this.headG, -0.14, -0.04, 0.16, 0.07, 0.05, 0.04);
-    this._mesh(g.sphere, this.mBlush, this.headG, 0.14, -0.04, 0.16, 0.07, 0.05, 0.04);
-    const eyeL = this._mesh(g.sphere, this.mEye, this.headG, -0.1, 0.04, 0.2, 0.07, 0.08, 0.06);
-    const eyeR = this._mesh(g.sphere, this.mEye, this.headG, 0.1, 0.04, 0.2, 0.07, 0.08, 0.06);
-    this._mesh(g.sphere, this.mPupil, eyeL, 0, 0, 0.7, 0.45, 0.5, 0.4);
-    this._mesh(g.sphere, this.mPupil, eyeR, 0, 0, 0.7, 0.45, 0.5, 0.4);
-    const beak = this._mesh(g.beak, this.mBeak, this.headG, 0, -0.04, 0.28, 1, 1, 1);
-    beak.rotation.x = Math.PI / 2;
+    this.head = this._mesh(g.capHead, this.mFur, this.headG, 0, 0.02, 0);
+    // white eye patches (classic penguin face) + big eyes slightly to the sides
+    this._mesh(g.sphere, this.mBelly, this.headG, -0.14, 0.06, 0.18, 0.12, 0.13, 0.1);
+    this._mesh(g.sphere, this.mBelly, this.headG, 0.14, 0.06, 0.18, 0.12, 0.13, 0.1);
+    this._mesh(g.sphere, this.mBlush, this.headG, -0.18, -0.04, 0.16, 0.07, 0.05, 0.05);
+    this._mesh(g.sphere, this.mBlush, this.headG, 0.18, -0.04, 0.16, 0.07, 0.05, 0.05);
+    const eyeL = this._mesh(g.sphere, this.mEye, this.headG, -0.13, 0.07, 0.22, 0.09, 0.1, 0.08);
+    const eyeR = this._mesh(g.sphere, this.mEye, this.headG, 0.13, 0.07, 0.22, 0.09, 0.1, 0.08);
+    this._mesh(g.sphere, this.mPupil, eyeL, 0.05, 0, 0.55, 0.5, 0.55, 0.4);
+    this._mesh(g.sphere, this.mPupil, eyeR, -0.05, 0, 0.55, 0.5, 0.55, 0.4);
+    const beak = this._mesh(g.beak, this.mBeak, this.headG, 0, -0.04, 0.30, 1.15, 1.1, 1.15);
+    beak.rotation.x = Math.PI / 2.05;
 
-    // hood (up)
+    // OPEN hood: a cowl behind and around the head, face and most of the
+    // black head stay visible from behind and 3/4
     this.hood = new THREE.Group();
     this.headG.add(this.hood);
-    const hoodM = this._mesh(g.hood, this.mHoodie, this.hood, 0, 0.04, -0.02, 1.08, 1.04, 1.14);
-    hoodM.rotation.x = 0.35;
-    const hoodIn = this._mesh(g.hood, this.mHoodIn, this.hood, 0, 0.04, -0.02, 0.98, 0.96, 1.04);
-    hoodIn.rotation.x = 0.35;
+    // cowl pulled back so the black head, eyes and beak stay in the open
+    const hoodM = this._mesh(g.hood, this.mHoodie, this.hood, 0, 0.12, -0.12, 1.06, 0.95, 1.0);
+    hoodM.rotation.x = 0.72;
+    const hoodIn = this._mesh(g.hood, this.mHoodIn, this.hood, 0, 0.12, -0.12, 0.94, 0.86, 0.9);
+    hoodIn.rotation.x = 0.72;
     hoodIn.castShadow = false;
-    // little hood drape at the back so it reads as cloth, not a balloon
-    this._mesh(g.sphere, this.mHoodie, this.hood, 0, -0.02, -0.22, 0.18, 0.16, 0.12);
-    // drawstrings
-    this.stringL = this._mesh(g.cyl, this.mString, this.hood, -0.09, -0.14, 0.16, 0.012, 0.26, 0.012);
-    this.stringR = this._mesh(g.cyl, this.mString, this.hood, 0.09, -0.14, 0.16, 0.012, 0.26, 0.012);
+    this.stringL = this._mesh(g.cyl, this.mString, this.hood, -0.12, -0.18, 0.10, 0.012, 0.28, 0.012);
+    this.stringR = this._mesh(g.cyl, this.mString, this.hood, 0.12, -0.18, 0.10, 0.012, 0.28, 0.012);
     this._mesh(g.sphere, this.mTrim, this.stringL, 0, -0.55, 0, 1.8, 0.2, 1.8);
     this._mesh(g.sphere, this.mTrim, this.stringR, 0, -0.55, 0, 1.8, 0.2, 1.8);
 
-    // accessories
+    // accessories (kept, retuned to the bigger head)
     this.accBeanie = new THREE.Group(); this.headG.add(this.accBeanie);
-    this._mesh(g.sphere, this.mBeanie, this.accBeanie, 0, 0.14, 0, 0.96, 0.55, 0.96);
-    this._mesh(g.cyl, this.mBeanie, this.accBeanie, 0, 0.02, 0, 0.27, 0.1, 0.27);
-    this._mesh(g.sphere, this.mBeaniePom, this.accBeanie, 0, 0.32, -0.02, 0.1, 0.1, 0.1);
+    this._mesh(g.sphere, this.mBeanie, this.accBeanie, 0, 0.2, 0, 1.05, 0.55, 1.05);
+    this._mesh(g.cyl, this.mBeanie, this.accBeanie, 0, 0.08, 0, 0.29, 0.1, 0.29);
+    this._mesh(g.sphere, this.mBeaniePom, this.accBeanie, 0, 0.38, -0.02, 0.1, 0.1, 0.1);
 
     this.accScarf = new THREE.Group(); this.torso.add(this.accScarf);
-    this._mesh(g.cyl, this.mScarf, this.accScarf, 0, 0.32, 0, 0.24, 0.08, 0.24);
-    this.scarfT1 = this._mesh(g.box, this.mScarf, this.accScarf, -0.08, 0.05, -0.28, 0.1, 0.42, 0.05);
-    this.scarfT2 = this._mesh(g.box, this.mScarf2, this.accScarf, 0.1, -0.02, -0.26, 0.1, 0.5, 0.05);
+    this._mesh(g.cyl, this.mScarf, this.accScarf, 0, 0.24, 0.04, 0.22, 0.08, 0.22);
+    this.scarfT1 = this._mesh(g.box, this.mScarf, this.accScarf, -0.08, 0.02, -0.22, 0.1, 0.42, 0.05);
+    this.scarfT2 = this._mesh(g.box, this.mScarf2, this.accScarf, 0.1, -0.04, -0.2, 0.1, 0.5, 0.05);
 
     this.accGlasses = new THREE.Group(); this.headG.add(this.accGlasses);
-    this._mesh(g.box, this.mGlass, this.accGlasses, -0.1, 0.04, 0.22, 0.14, 0.08, 0.04);
-    this._mesh(g.box, this.mGlass, this.accGlasses, 0.1, 0.04, 0.22, 0.14, 0.08, 0.04);
-    this._mesh(g.box, this.mGlassArm, this.accGlasses, 0, 0.04, 0.22, 0.08, 0.03, 0.03);
-    this._mesh(g.box, this.mGlassArm, this.accGlasses, -0.18, 0.04, 0.08, 0.03, 0.025, 0.22);
-    this._mesh(g.box, this.mGlassArm, this.accGlasses, 0.18, 0.04, 0.08, 0.03, 0.025, 0.22);
+    this._mesh(g.box, this.mGlass, this.accGlasses, -0.13, 0.07, 0.26, 0.14, 0.08, 0.04);
+    this._mesh(g.box, this.mGlass, this.accGlasses, 0.13, 0.07, 0.26, 0.14, 0.08, 0.04);
+    this._mesh(g.box, this.mGlassArm, this.accGlasses, 0, 0.07, 0.26, 0.08, 0.03, 0.03);
+    this._mesh(g.box, this.mGlassArm, this.accGlasses, -0.22, 0.07, 0.1, 0.03, 0.025, 0.22);
+    this._mesh(g.box, this.mGlassArm, this.accGlasses, 0.22, 0.07, 0.1, 0.03, 0.025, 0.22);
 
     this.accPhones = new THREE.Group(); this.headG.add(this.accPhones);
-    this._mesh(g.cyl, this.mPhones, this.accPhones, 0, 0.22, 0, 0.22, 0.05, 0.22).rotation.z = 0;
-    const band = this._mesh(g.cyl, this.mPhones, this.accPhones, 0, 0.14, 0, 0.24, 0.04, 0.24);
-    band.rotation.z = Math.PI / 2; band.scale.set(1, 1, 0.85); band.rotation.x = Math.PI / 2;
-    // better headband: torus-like using scaled sphere slice
-    this._mesh(g.sphere, this.mPhones, this.accPhones, 0, 0.16, 0, 1.05, 0.55, 0.95);
-    this._mesh(g.cyl, this.mPhones, this.accPhones, -0.26, 0.02, 0, 0.1, 0.08, 0.1).rotation.z = Math.PI / 2;
-    this._mesh(g.cyl, this.mPhones, this.accPhones, 0.26, 0.02, 0, 0.1, 0.08, 0.1).rotation.z = Math.PI / 2;
-    this._mesh(g.cyl, this.mPhonesAcc, this.accPhones, -0.28, 0.02, 0, 0.07, 0.04, 0.07).rotation.z = Math.PI / 2;
-    this._mesh(g.cyl, this.mPhonesAcc, this.accPhones, 0.28, 0.02, 0, 0.07, 0.04, 0.07).rotation.z = Math.PI / 2;
+    this._mesh(g.sphere, this.mPhones, this.accPhones, 0, 0.2, 0, 1.12, 0.5, 1.05);
+    this._mesh(g.cyl, this.mPhones, this.accPhones, -0.30, 0.04, 0.02, 0.1, 0.08, 0.1).rotation.z = Math.PI / 2;
+    this._mesh(g.cyl, this.mPhones, this.accPhones, 0.30, 0.04, 0.02, 0.1, 0.08, 0.1).rotation.z = Math.PI / 2;
+    this._mesh(g.cyl, this.mPhonesAcc, this.accPhones, -0.32, 0.04, 0.02, 0.07, 0.04, 0.07).rotation.z = Math.PI / 2;
+    this._mesh(g.cyl, this.mPhonesAcc, this.accPhones, 0.32, 0.04, 0.02, 0.07, 0.04, 0.07).rotation.z = Math.PI / 2;
 
     this.accParka = new THREE.Group(); this.headG.add(this.accParka);
-    // fur rim around hood, visible from behind as a fluffy halo
-    this._mesh(g.sphere, this.mFurTrim, this.accParka, 0, 0.06, -0.04, 0.32, 0.24, 0.30);
+    this._mesh(g.sphere, this.mFurTrim, this.accParka, 0, 0.02, -0.1, 0.36, 0.28, 0.32);
 
     this.accNinja = new THREE.Group(); this.headG.add(this.accNinja);
-    this._mesh(g.cyl, this.mNinja, this.accNinja, 0, 0.06, 0, 0.27, 0.12, 0.27);
-    // knot at the back
-    this.ninjaKnot = this._mesh(g.sphere, this.mNinja, this.accNinja, 0, 0.08, -0.26, 0.08, 0.07, 0.08);
-    this._mesh(g.box, this.mNinja, this.accNinja, -0.06, 0.02, -0.32, 0.06, 0.16, 0.03);
-    this._mesh(g.box, this.mNinja, this.accNinja, 0.06, -0.02, -0.32, 0.06, 0.18, 0.03);
+    this._mesh(g.cyl, this.mNinja, this.accNinja, 0, 0.08, 0.04, 0.29, 0.12, 0.29);
+    this.ninjaKnot = this._mesh(g.sphere, this.mNinja, this.accNinja, 0, 0.1, -0.28, 0.08, 0.07, 0.08);
+    this._mesh(g.box, this.mNinja, this.accNinja, -0.06, 0.04, -0.34, 0.06, 0.16, 0.03);
+    this._mesh(g.box, this.mNinja, this.accNinja, 0.06, 0.0, -0.34, 0.06, 0.18, 0.03);
 
     this.accRain = new THREE.Group(); this.torso.add(this.accRain);
-    // shiny yellow already from hoodie color; add front flap / darker belt
-    this._mesh(g.box, this.mTrim, this.accRain, 0, 0.0, 0.29, 0.08, 0.36, 0.04);
+    this._mesh(g.box, this.mTrim, this.accRain, 0, 0.0, 0.26, 0.07, 0.3, 0.04);
 
     this.accessories = {
       none: [],
@@ -556,8 +608,7 @@ class Penguin {
       ninja: [this.accNinja]
     };
 
-    // shadow blob (always under feet, even without shadow maps at distance)
-    this.blob = this._mesh(new THREE.CircleGeometry(0.55, 20), std(0x000000, { transparent: true, opacity: 0.38, depthWrite: false }), this.root, 0, 0.025, 0.05);
+    this.blob = this._mesh(new THREE.CircleGeometry(0.5, 20), std(0x000000, { transparent: true, opacity: 0.38, depthWrite: false }), this.root, 0, 0.025, 0.05);
     this.blob.rotation.x = -Math.PI / 2;
     this.blob.castShadow = false;
   }
@@ -658,8 +709,11 @@ class Penguin {
 
     this.legL.rotation.x = legA;
     this.legR.rotation.x = legB;
-    this.footL.rotation.x = -legA * 0.45 + (onG ? 0.15 : 0);
-    this.footR.rotation.x = -legB * 0.45 + (onG ? 0.15 : 0);
+    // slap: plant the foot flat and a little extra when it hits the ground
+    const slapL = onG ? Math.max(0, -Math.sin(t)) * 0.35 : 0;
+    const slapR = onG ? Math.max(0, Math.sin(t)) * 0.35 : 0;
+    this.footL.rotation.x = -legA * 0.5 + 0.18 + slapL;
+    this.footR.rotation.x = -legB * 0.5 + 0.18 + slapR;
     this.armL.rotation.x = armA;
     this.armR.rotation.x = armB;
     this.armL.rotation.z = 0.35;
@@ -669,7 +723,7 @@ class Penguin {
     this.hop.rotation.z = lerp(this.hop.rotation.z, -lean * 0.4, clamp(10 * dt, 0, 1));
     this.hop.rotation.y = waddle * 0.35;
     this.hop.scale.set(1 / Math.sqrt(squash), squash, 1 / Math.sqrt(squash));
-    this.torso.position.y = 0.58 + (onG ? Math.abs(Math.sin(t)) * 0.02 : 0);
+    this.torso.position.y = 0.52 + (onG ? Math.abs(Math.sin(t)) * 0.02 : 0);
 
     if (this.tail) this.tail.rotation.x = Math.sin(t * 1.2) * 0.25;
     if (this.scarfT1) {
@@ -680,7 +734,7 @@ class Penguin {
       this.stringL.rotation.x = 0.15 + Math.sin(t + 0.4) * 0.15;
       this.stringR.rotation.x = 0.15 + Math.sin(t + 1.1) * 0.15;
     }
-    this.headG.rotation.x = (ev.sliding ? -0.3 : -0.08) + Math.sin(t * 0.5) * 0.03;
+    this.headG.rotation.x = (ev.sliding ? -0.28 : -0.02) + Math.sin(t * 0.5) * 0.03;
     this.headG.rotation.z = -lean * 0.1;
 
     const shadowScale = ev.jumpY > 0 ? clamp(1 - ev.jumpY * 0.35, 0.4, 1) : 1;
@@ -760,18 +814,18 @@ class World {
     this.mTrunk = std(0x6a3f22, { roughness: 0.85 });
     this.mTrunkD = std(0x4a2a14, { roughness: 0.85 });
     this.mPalm = std(0x8a6230, { roughness: 0.8 });
-    this.mFrond = std(0x2f9a4a, { roughness: 0.7 });
-    this.mFrond2 = std(0x49b85c, { roughness: 0.7 });
-    this.mPink = std(0xff9ab8, { roughness: 0.75 });
-    this.mPink2 = std(0xffd0de, { roughness: 0.75 });
-    this.mLeafG = std(0x3da84c, { roughness: 0.75 });
-    this.mOrange = std(0xff7a2a, { roughness: 0.75 });
-    this.mRed = std(0xe03a2a, { roughness: 0.75 });
-    this.mGold = std(0xffc14d, { roughness: 0.75 });
-    this.mPine = std(0x1f6a3a, { roughness: 0.72 });
-    this.mPine2 = std(0x2a8050, { roughness: 0.72 });
+    this.mFrond = toon(0x2f9a4a);
+    this.mFrond2 = toon(0x49b85c);
+    this.mPink = toon(0xff9ab8);
+    this.mPink2 = toon(0xffd0de);
+    this.mLeafG = toon(0x3da84c);
+    this.mOrange = toon(0xff7a2a);
+    this.mRed = toon(0xe03a2a);
+    this.mGold = toon(0xffc14d);
+    this.mPine = toon(0x1f6a3a);
+    this.mPine2 = toon(0x2a8050);
     this.mSnow = std(0xf6fbff, { roughness: 0.85 });
-    this.mBush = std(0x3d9a48, { roughness: 0.78 });
+    this.mBush = toon(0x3d9a48);
     this.mFlower = [std(0xff7fa8), std(0xfff176), std(0xff9f43), std(0xf2f2f2)];
     this.mHill = std(0x4a9a55, { roughness: 0.9 });
     this.mRockDeco = std(0xb8c0b0, { roughness: 0.9 }); // decorative only, not obstacles
@@ -796,70 +850,71 @@ class World {
     const g = new THREE.Group();
     const typ = season;
     if (typ === 1) {
-      // palm
-      const n = 3 + irand(2);
+      // palm — smooth tapered trunk + rounded fronds
+      const n = 4;
       let y = 0;
       for (let i = 0; i < n; i++) {
         const seg = new THREE.Mesh(this.geo.cyl, this.mPalm);
-        seg.scale.set(0.16 - i * 0.012, 0.7, 0.16 - i * 0.012);
-        seg.position.y = y + 0.35;
-        seg.rotation.z = (i % 2 ? 1 : -1) * 0.08;
+        const r = 0.15 - i * 0.015;
+        seg.scale.set(r, 0.62, r);
+        seg.position.y = y + 0.31;
+        seg.rotation.z = (i % 2 ? 1 : -1) * 0.05;
         seg.castShadow = true;
         g.add(seg);
-        y += 0.62;
+        y += 0.56;
       }
-      const top = y + 0.1;
-      for (let i = 0; i < 7; i++) {
-        const fr = new THREE.Mesh(this.geo.box, i % 2 ? this.mFrond : this.mFrond2);
-        const a = (i / 7) * Math.PI * 2;
-        fr.position.set(Math.cos(a) * 0.15, top, Math.sin(a) * 0.15);
-        fr.rotation.set(0.15, -a, 0.9);
-        fr.scale.set(0.22, 0.05, 1.5);
+      const top = y + 0.08;
+      for (let i = 0; i < 8; i++) {
+        const fr = new THREE.Mesh(this.geo.frond, i % 2 ? this.mFrond : this.mFrond2);
+        const a = (i / 8) * Math.PI * 2 + 0.1;
+        fr.position.set(Math.cos(a) * 0.35, top - 0.05, Math.sin(a) * 0.35);
+        fr.rotation.set(1.05, -a, 0);
+        fr.scale.set(0.55, 0.1, 1.7);
         fr.castShadow = true;
         g.add(fr);
       }
     } else if (typ === 3) {
-      // pine
+      // pine — rounded cones, soft snow caps
       const trunk = new THREE.Mesh(this.geo.cylTaper, this.mTrunkD);
       trunk.position.y = 0.7; trunk.scale.set(0.55, 0.9, 0.55); trunk.castShadow = true; g.add(trunk);
       const layers = 4;
       for (let i = 0; i < layers; i++) {
         const c = new THREE.Mesh(this.geo.cone, i % 2 ? this.mPine : this.mPine2);
         c.position.y = 1.05 + i * 0.55;
-        const s = 1.15 - i * 0.2;
-        c.scale.set(s, 0.85, s);
+        const sc = 1.15 - i * 0.2;
+        c.scale.set(sc, 0.85, sc);
         c.castShadow = true; g.add(c);
-        const snow = new THREE.Mesh(this.geo.sphereLo, this.mSnow);
-        snow.position.y = 1.25 + i * 0.55;
-        snow.scale.set(s * 0.7, 0.16, s * 0.7);
+        const snow = new THREE.Mesh(this.geo.sphereMid, this.mSnow);
+        snow.position.y = 1.28 + i * 0.55;
+        snow.scale.set(sc * 0.62, 0.18, sc * 0.62);
         g.add(snow);
       }
     } else if (typ === 2) {
-      // autumn
+      // autumn — overlapping rounded canopies
       const trunk = new THREE.Mesh(this.geo.cylTaper, this.mTrunk);
       trunk.position.y = 0.8; trunk.scale.set(0.7, 1, 0.7); trunk.castShadow = true; g.add(trunk);
       const cols = [this.mOrange, this.mRed, this.mGold, this.mOrange];
       for (let i = 0; i < 5; i++) {
-        const c = new THREE.Mesh(this.geo.ico, cols[i % cols.length]);
-        c.position.set(rand(-0.45, 0.45), 1.6 + rand(-0.15, 0.45), rand(-0.45, 0.45));
-        c.scale.setScalar(rand(0.5, 0.85));
+        const c = new THREE.Mesh(this.geo.sphereMid, cols[i % cols.length]);
+        c.position.set(rand(-0.4, 0.4), 1.65 + rand(-0.12, 0.4), rand(-0.4, 0.4));
+        c.scale.setScalar(rand(0.52, 0.82));
         c.castShadow = true; g.add(c);
       }
     } else {
-      // spring blossom
+      // spring blossom — soft rounded puffs
       const trunk = new THREE.Mesh(this.geo.cylTaper, this.mTrunk);
       trunk.position.y = 0.75; trunk.scale.set(0.6, 0.95, 0.6); trunk.castShadow = true; g.add(trunk);
       const cols = [this.mPink, this.mPink2, this.mLeafG, this.mPink];
       for (let i = 0; i < 5; i++) {
-        const c = new THREE.Mesh(this.geo.ico, cols[i % cols.length]);
-        c.position.set(rand(-0.4, 0.4), 1.5 + rand(-0.1, 0.5), rand(-0.4, 0.4));
-        c.scale.setScalar(rand(0.48, 0.8));
+        const c = new THREE.Mesh(this.geo.sphereMid, cols[i % cols.length]);
+        c.position.set(rand(-0.35, 0.35), 1.55 + rand(-0.1, 0.42), rand(-0.35, 0.35));
+        c.scale.setScalar(rand(0.5, 0.78));
         c.castShadow = true; g.add(c);
       }
     }
     // bush / tuft at base sometimes
     if (Math.random() < 0.5 && typ !== 1) {
-      const b = new THREE.Mesh(this.geo.icoLo, typ === 3 ? this.mSnow : typ === 2 ? this.mOrange : this.mBush);
+      const b = new THREE.Mesh(this.geo.sphereLo, typ === 3 ? this.mSnow : typ === 2 ? this.mOrange : this.mBush);
       b.position.set(rand(-0.3, 0.3), 0.22, rand(-0.3, 0.3));
       b.scale.set(0.35, 0.28, 0.35);
       g.add(b);
@@ -891,7 +946,7 @@ class World {
     if (kind === 'tree') p.mesh = this._makeTree(season);
     else if (kind === 'flower') p.mesh = this._makeFlower();
     else {
-      p.mesh = new THREE.Mesh(this.geo.icoLo, season === 3 ? this.mSnow : season === 1 ? std(0xefe0b0) : this.mBush);
+      p.mesh = new THREE.Mesh(this.geo.sphereLo, season === 3 ? this.mSnow : season === 1 ? std(0xefe0b0) : this.mBush);
       p.mesh.scale.set(rand(0.25, 0.5), rand(0.18, 0.32), rand(0.25, 0.5));
       p.mesh.position.y = 0.15;
     }
@@ -911,7 +966,7 @@ class World {
     const zEnd = z0 + 120;
     for (let z = z0 - 10; z < zEnd; z += rand(3.4, 5.8)) {
       for (const side of [-1, 1]) {
-        const x = side * rand(3.7, 7.2);
+        const x = side * rand(4.4, 8.0);
         this._placeProp('tree', x, z + rand(-1.5, 1.5), season);
         if (Math.random() < 0.7) this._placeProp('bush', side * rand(3.5, 6.8), z + rand(1, 3), season);
         if (season === 0 && Math.random() < 0.8) this._placeProp('flower', side * rand(3.3, 6.2), z + rand(0, 2), season);
@@ -990,8 +1045,8 @@ class World {
       if (p.mesh.position.z < behind) {
         p.mesh.position.z = ahead + rand(0, 10);
         const side = p.mesh.position.x < 0 ? -1 : 1;
-        const minX = p.kind === 'tree' ? 3.7 : 3.3;
-        p.mesh.position.x = side * rand(minX, p.kind === 'tree' ? 12 : 7);
+        const minX = p.kind === 'tree' ? 4.4 : 3.6;
+        p.mesh.position.x = side * rand(minX, p.kind === 'tree' ? 12 : 8);
         p.mesh.rotation.y = rand(0, Math.PI * 2);
       }
     }
@@ -1265,8 +1320,9 @@ class Game {
       shop: document.getElementById('shop'),
       over: document.getElementById('over'),
       toast: document.getElementById('toast'),
-      seasonName: document.getElementById('season-name'),
-      seasonTag: document.getElementById('season-tag'),
+      track: document.getElementById('season-track'),
+      countdown: document.getElementById('countdown'),
+      countNum: document.querySelector('#countdown span'),
       dots: document.getElementById('dots'),
       homeCoins: document.getElementById('home-coins'),
       shopCoins: document.getElementById('shop-coins'),
@@ -1324,11 +1380,7 @@ class Game {
       const dx = x - this.sw.x, dy = y - this.sw.y;
       if (this.state === 'home') {
         this.homeOff = dx;
-        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-          this.sw.done = true;
-          this._setSeason(this.season + (dx < 0 ? 1 : -1), false);
-          this.homeOff = 0;
-        }
+        this._layoutHome(true);
         return;
       }
       if (this.state !== 'play') return;
@@ -1339,14 +1391,23 @@ class Game {
       const dx = x - this.sw.x, dy = y - this.sw.y;
       if (!this.sw.done) {
         if (this.state === 'home') {
-          if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) this._setSeason(this.season + (dx < 0 ? 1 : -1), false);
+          const vw = Math.max(1, window.innerWidth);
+          if (Math.abs(dx) > Math.max(40, vw * 0.12) && Math.abs(dx) > Math.abs(dy)) {
+            this._setSeason(this.season + (dx < 0 ? 1 : -1), false);
+          } else {
+            this.homeOff = 0;
+            this._layoutHome(false);
+          }
         } else if (this.state === 'play') {
           if (Math.hypot(dx, dy) > 30) this._swipe(dx, dy); else this._tap();
         } else if (this.state === 'over' && this.deadT > 0.6) {
           // let buttons handle retry/home
         }
+      } else if (this.state === 'home') {
+        this.homeOff = 0;
+        this._layoutHome(false);
       }
-      this.sw = null; this.homeOff = 0;
+      this.sw = null;
     };
     const evXY = e => {
       const t = e.changedTouches ? e.changedTouches[0] : e;
@@ -1355,7 +1416,7 @@ class Game {
     window.addEventListener('pointerdown', e => { const [x, y, t] = evXY(e); down(x, y, t); });
     window.addEventListener('pointermove', e => { const [x, y] = evXY(e); move(x, y); });
     window.addEventListener('pointerup', e => { const [x, y] = evXY(e); up(x, y); });
-    window.addEventListener('pointercancel', () => { this.sw = null; this.homeOff = 0; });
+    window.addEventListener('pointercancel', () => { this.sw = null; this.homeOff = 0; if (this.state === 'home') this._layoutHome(false); });
     window.addEventListener('keydown', e => {
       Sfx.unlock(); this.music.unlock();
       const k = e.code;
@@ -1416,27 +1477,72 @@ class Game {
   _setSeason(i, snap) {
     const n = (i + 4) % 4;
     if (n === this.season && !snap) {
+      this.homeOff = 0;
+      this._layoutHome(false);
       this.music.play(n, false);
       return;
     }
     this.season = n;
     this.save.season = n;
     saveSave(this.save);
+    this.homeOff = 0;
     this._applySeasonVisuals(n, !!snap);
+    this._layoutHome(!!snap);
     this.music.play(n, snap);
+  }
+  _layoutHome(instant) {
+    if (!this.$.track) return;
+    const vw = Math.max(1, window.innerWidth);
+    // 25% of the 400%-wide track equals one viewport page
+    const x = -this.season * 25 + (this.homeOff / vw) * 25;
+    this.$.track.style.transition = instant ? 'none' : 'transform 0.32s cubic-bezier(.2,.8,.2,1)';
+    this.$.track.style.transform = 'translateX(' + x + '%)';
+    const nearest = ((Math.round(this.season - this.homeOff / vw) % 4) + 4) % 4;
+    [...this.$.dots.children].forEach((d, k) => d.classList.toggle('on', k === nearest));
   }
   _applySeasonVisuals(i, snap) {
     const s = SEASONS[i];
     document.documentElement.style.setProperty('--accent', hexCol(s.accent));
-    this.$.seasonName.textContent = s.name;
-    this.$.seasonTag.textContent = s.tag;
     [...this.$.dots.children].forEach((d, k) => d.classList.toggle('on', k === i));
     this.world.setSeason(i, this.pz);
     this.penguin.setCostume(this.save.equipped);
   }
+  _hideCount() {
+    if (this.$.countdown) this.$.countdown.classList.add('hidden');
+    if (this.$.countNum) this.$.countNum.classList.remove('show');
+  }
+  _tickCountdown(dt) {
+    this.countT -= dt;
+    const t = this.countT;
+    let label, idx;
+    if (t > 2.2) { label = '3'; idx = 3; }
+    else if (t > 1.2) { label = '2'; idx = 2; }
+    else if (t > 0.4) { label = '1'; idx = 1; }
+    else if (t > 0) { label = 'GO'; idx = 0; }
+    else {
+      this._hideCount();
+      this.state = 'play';
+      this.toast('Tap to shift  ·  Swipe to steer', 2.0);
+      return;
+    }
+    if (idx !== this._countShown) {
+      this._countShown = idx;
+      const el = this.$.countdown, span = this.$.countNum;
+      if (el && span) {
+        el.classList.remove('hidden');
+        span.classList.remove('show');
+        span.textContent = label;
+        void span.offsetWidth;
+        span.classList.add('show');
+      }
+      if (idx === 0) Sfx.go(); else Sfx.tick();
+    }
+  }
 
   _goHome(first = false) {
     this.state = 'home';
+    this._hideCount();
+    this.homeOff = 0;
     this.pz = 0; this.px = 0; this.lane = 0;
     this.jumpY = 0; this.jumpV = 0; this.slideT = 0;
     this.speed = 10.5; this.elapsed = 0;
@@ -1452,6 +1558,7 @@ class Game {
     this._refreshMute();
     if (!first) this.music.play(this.season, false);
     // first: wait for a gesture to actually start audio
+    this._layoutHome(true);
   }
 
   openShop() {
@@ -1533,11 +1640,12 @@ class Game {
     this._refreshCoins();
   }
 
-  startRun() {
+  startRun(skipCount) {
     this.$.home.classList.add('hidden');
     this.$.shop.classList.add('hidden');
     this.$.over.classList.add('hidden');
     this.$.hud.classList.remove('hidden');
+    this._hideCount();
     this.music.play(this.season, false);
     this.pools.releaseAll();
     this.lane = 0; this.px = 0; this.pz = 0;
@@ -1557,11 +1665,18 @@ class Game {
     this.coinMul = 1 + 0.5 * (this.save.upgrades.doubleCoins | 0);
     this.magLv = this.save.upgrades.magnet | 0;
     this.ignoreHit = false;
-    this.state = 'play';
     this.world.setSeason(this.season, 0);
     this._formUI();
     this._hud();
-    this.toast('Tap to shift  ·  Swipe to steer', 2.0);
+    if (skipCount) {
+      this.state = 'play';
+      this.toast('Tap to shift  ·  Swipe to steer', 2.0);
+    } else {
+      this.state = 'countdown';
+      this.countT = 3.2;
+      this._countShown = -1;
+      this._tickCountdown(0);
+    }
   }
 
   _calcSpeed() {
@@ -1640,21 +1755,21 @@ class Game {
     const o = this.pools.obtain(this.pools.coins); if (!o) return;
     o.live = true; o.taken = false; o.lane = lane; o.z = z; o.h = h || 0;
     o.mesh.visible = true;
-    o.mesh.position.set(lane * LANE_W, 0.55 + o.h, z);
+    o.mesh.position.set(laneX(lane), 0.55 + o.h, z);
   }
   _addGate(z, phase, span, lane = 0) {
     const o = this.pools.obtain(this.pools.gates); if (!o) return;
     o.live = true; o.z = z; o.lane = lane; o.type = 'gate';
     this.pools.styleGate(o, phase, span, SEASONS[this.season].accent);
     o.mesh.visible = true;
-    o.mesh.position.set(span === 'all' ? 0 : lane * LANE_W, 0, z);
+    o.mesh.position.set(span === 'all' ? 0 : laneX(lane), 0, z);
   }
   _addObs(kind, lane, z) {
     const o = this.pools.obtain(this.pools.obs); if (!o) return;
     o.live = true; o.lane = lane; o.z = z; o.type = kind;
     this.pools.buildObs(o, kind, this.season);
     o.mesh.visible = true;
-    o.mesh.position.set(lane * LANE_W, 0, z);
+    o.mesh.position.set(laneX(lane), 0, z);
   }
 
   // ------ collision ------
@@ -1669,7 +1784,7 @@ class Game {
     if (o.span === 'all' || o.type === 'gate' && o.span === 'all') {
       // full width
     } else {
-      const ox = (o.lane || 0) * LANE_W;
+      const ox = laneX(o.lane || 0);
       const half = (o.type === 'gate') ? 0.75 : 0.62;
       if (Math.abs(px - ox) > half) return false;
     }
@@ -1704,6 +1819,7 @@ class Game {
   }
   _endRun() {
     this.state = 'over';
+    this._hideCount();
     const earned = Math.round(this.runCoins * this.coinMul);
     this.save.coins += earned;
     const sc = this.score | 0;
@@ -1739,7 +1855,10 @@ class Game {
 
     const playing = this.state === 'play';
     const dying = this.state === 'dying';
+    const counting = this.state === 'countdown';
     const home = this.state === 'home' || this.state === 'shop';
+
+    if (counting) this._tickCountdown(dt);
 
     if (playing) {
       this.elapsed += dt;
@@ -1782,7 +1901,7 @@ class Game {
       if (this.slideT > 0) this.slideT -= dt;
     }
 
-    const targetX = this.lane * LANE_W;
+    const targetX = laneX(this.lane);
     const k = 1 - Math.exp(-16 * dt);
     const prevX = this.px;
     this.px += (targetX - this.px) * k;
@@ -1790,8 +1909,8 @@ class Game {
 
     this.penguin.root.position.set(this.px, 0, this.pz);
     this.penguin.animate(dt, {
-      moving: playing || home,
-      idleRun: home,
+      moving: playing || home || counting,
+      idleRun: home || counting,
       speed: this.speed,
       jumpY: this.jumpY,
       sliding: this.slideT > 0 && this.jumpY <= 0.02,
@@ -1827,7 +1946,7 @@ class Game {
       if (!o.live || o.taken) continue;
       o.mesh.rotation.y += dt * 4.2;
       o.mesh.position.y = 0.55 + o.h + Math.sin(t * 4 + o.z) * 0.08;
-      o.mesh.position.x = o.lane * LANE_W;
+      o.mesh.position.x = laneX(o.lane);
       o.mesh.position.z = o.z;
       // magnet
       if (this.magLv > 0) {
@@ -1850,7 +1969,7 @@ class Game {
     for (const o of this.pools.gates) {
       if (!o.live) continue;
       o.mesh.position.z = o.z;
-      o.mesh.position.x = o.span === 'all' ? 0 : o.lane * LANE_W;
+      o.mesh.position.x = o.span === 'all' ? 0 : laneX(o.lane);
       const solid = o.phase === this.phase;
       this.pools.setGateSolid(o, solid);
       if (this.collides(o)) this._hit(o);
@@ -1859,14 +1978,14 @@ class Game {
     for (const o of this.pools.obs) {
       if (!o.live) continue;
       o.mesh.position.z = o.z;
-      o.mesh.position.x = o.lane * LANE_W;
+      o.mesh.position.x = laneX(o.lane);
       if (this.collides(o)) this._hit(o);
       else if (o.z < this.pz - 6) { o.live = false; o.mesh.visible = false; }
     }
   }
 
   _camera(dt) {
-    const playing = this.state === 'play' || this.state === 'dying';
+    const playing = this.state === 'play' || this.state === 'dying' || this.state === 'countdown';
     const home = this.state === 'home' || this.state === 'shop';
     const speedK = clamp((this.speed - 10.5) / 16, 0, 1);
     this.camX += (this.px - this.camX) * Math.min(1, 6.2 * dt);
@@ -1933,7 +2052,10 @@ class Game {
       get slideT() { return self.slideT; },
       get save() { return self.save; },
       get VERSION() { return VERSION; },
-      startRun: () => self.startRun(),
+      startRun: (skip) => self.startRun(skip),
+      laneX: laneX,
+      get countT() { return self.countT; },
+      get cam() { return self.camera; },
       goHome: () => self._goHome(),
       openShop: () => self.openShop(),
       closeShop: () => self.closeShop(),
