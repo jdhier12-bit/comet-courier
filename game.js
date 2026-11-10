@@ -1,10 +1,10 @@
-// Season Shift v4 — SEASON_SHIFT_V4
+// Season Shift v4.1 — SEASON_SHIFT_V4_1
 // An original 3D endless runner for Joseph. Pip the penguin, Bloom & Aurora.
 // Path corners / T-junctions, tilt lanes, swipe jump-slide-turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4';
+const VERSION = 'SEASON_SHIFT_V4_1';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -23,7 +23,7 @@ const SPAWN_AHEAD = 72;
 const WARMUP = 36;
 const MAX_DT = 0.05;
 const PATH_W = 6.3;
-const TURN_R = 2.6;
+const TURN_R = 4.5; // must exceed PATH_W/2 so the inner curb radius stays positive
 
 const SEASONS = [
   { id: 'spring', name: 'SPRING', tag: 'Blossom Trails',
@@ -83,6 +83,50 @@ function yawVec(yaw) {
   const fx = Math.sin(yaw), fz = Math.cos(yaw);
   const sx = Math.cos(yaw), sz = -Math.sin(yaw);
   return { fx, fz, sx, sz, yaw };
+}
+function pathClearance() { return PATH_W * 0.5 + 3.35; }
+function distToSeg(seg, x, z) {
+  if (seg.type === 'straight') {
+    const v = yawVec(seg.yaw0);
+    const dx = x - seg.x0, dz = z - seg.z0;
+    const along = dx * v.fx + dz * v.fz;
+    const lat = Math.abs(dx * v.sx + dz * v.sz);
+    if (along < -0.8 || along > seg.length + 0.8) {
+      return Math.min(Math.hypot(x - seg.x0, z - seg.z0), Math.hypot(x - (seg.x1 ?? seg.x0), z - (seg.z1 ?? seg.z0)));
+    }
+    return lat;
+  }
+  const dir = seg.dir || (seg.type === 'left' ? -1 : 1);
+  const v0 = yawVec(seg.yaw0);
+  const R = TURN_R;
+  const cx = dir < 0 ? seg.x0 + v0.sx * R : seg.x0 - v0.sx * R;
+  const cz = dir < 0 ? seg.z0 + v0.sz * R : seg.z0 - v0.sz * R;
+  const vx = x - cx, vz = z - cz;
+  const rad = Math.hypot(vx, vz);
+  const sx0 = seg.x0 - cx, sz0 = seg.z0 - cz;
+  const sx1 = (seg.x1 ?? seg.x0) - cx, sz1 = (seg.z1 ?? seg.z0) - cz;
+  const ang = (ax, az, bx, bz) => Math.atan2(ax * bz - az * bx, ax * bx + az * bz);
+  const span = ang(sx0, sz0, sx1, sz1);
+  const a = ang(sx0, sz0, vx, vz);
+  const tt = span !== 0 ? a / span : 0;
+  if (tt < -0.12 || tt > 1.12) {
+    return Math.min(Math.hypot(x - seg.x0, z - seg.z0), Math.hypot(x - (seg.x1 ?? seg.x0), z - (seg.z1 ?? seg.z0)));
+  }
+  return Math.abs(rad - R);
+}
+function allPathSegs(path) {
+  const list = path.segs.slice();
+  if (path.branches && path.branches.left) list.push(...path.branches.left.segs);
+  if (path.branches && path.branches.right) list.push(...path.branches.right.segs);
+  if (path._lastAbandoned) list.push(...path._lastAbandoned.segs);
+  return list;
+}
+function onAnyPath(path, x, z, pad) {
+  const need = pad == null ? pathClearance() : pad;
+  for (const seg of allPathSegs(path)) {
+    if (distToSeg(seg, x, z) < need) return true;
+  }
+  return false;
 }
 
 window.__VERSION = VERSION;
@@ -367,7 +411,8 @@ function geoCache() {
     pathSlab: new THREE.BoxGeometry(PATH_W, 0.16, 1),
     curb: new THREE.BoxGeometry(0.22, 0.22, 1),
     wing: new THREE.BoxGeometry(10, 0.08, 1),
-    chevron: new THREE.ConeGeometry(0.28, 0.7, 3)
+    chevron: new THREE.ConeGeometry(0.28, 0.7, 3),
+    arrow: makeArrowGeom()
   };
 }
 
@@ -473,45 +518,67 @@ function makeOceanMat() {
   });
 }
 
-function makeArcGeom(dir) {
-  // Quarter-ring path slab, centered so start is at origin going +Z, ending at ±X.
-  // dir -1 left, +1 right.
+function makeArcGeom(dir, kind = 'slab') {
+  // Thick quarter-ring that overlaps the incoming and outgoing straights to hide seams.
+  // kind 'slab' is the road deck; 'curbIn' / 'curbOut' are the rounded edge rails.
   const R = TURN_R;
   const half = PATH_W * 0.5;
-  const shape = new THREE.Shape();
-  const steps = 14;
-  const a0 = dir < 0 ? Math.PI : 0;
-  const a1 = Math.PI * 0.5;
-  const sign = dir < 0 ? -1 : 1;
-  // For left: center at (+R, 0), start at (0,0), end at (R, R) in (x,z)
-  // We'll build in XY then rotate.
-  const pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const a = dir < 0 ? (Math.PI + t * Math.PI / 2) : (0 - t * Math.PI / 2);
-    // center (dir<0 ? R : -R, 0) in (x,z), radius from half-inner to half-outer
-  }
-  // Use a lathe-free Extrude of a ring sector in XZ via BufferGeometry
-  const inner = R - half, outer = R + half;
-  const verts = [], norms = [], uvs = [], idx = [];
+  const steps = 28;
+  const overlap = 0.55 / R; // radians of extra arc at each end
+  const vScale = (Math.abs((Math.PI / 2) + 2 * overlap) * R) / 8; // dash scale close to a mid-length straight
+  // Local space: incoming along +Z, corner at the origin.
+  // Left (dir<0) swings toward +X around center (+R,0): theta π → π/2.
+  // Right (dir>0) swings toward -X around center (-R,0): theta 0 → π/2.
   const cx = dir < 0 ? R : -R;
   const cz = 0;
+  const a0 = dir < 0 ? (Math.PI + overlap) : (0 - overlap);
+  const a1 = dir < 0 ? (Math.PI / 2 - overlap) : (Math.PI / 2 + overlap);
+  let r0, r1, y0, y1;
+  if (kind === 'slab') {
+    r0 = R - half; r1 = R + half; y0 = -0.06; y1 = 0.10;
+  } else if (kind === 'curbIn') {
+    r0 = R - half - 0.12; r1 = R - half + 0.12; y0 = 0.02; y1 = 0.24;
+  } else {
+    r0 = R + half - 0.12; r1 = R + half + 0.12; y0 = 0.02; y1 = 0.24;
+  }
+  const verts = [], norms = [], uvs = [], idx = [];
+  const push = (x, y, z, nx, ny, nz, u, v) => {
+    verts.push(x, y, z); norms.push(nx, ny, nz); uvs.push(u, v);
+  };
+  const base = 0;
+  // top face
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    // angle from start: start vector from center is (-dir, wait)
-    // left: center (R,0), start (0,0) angle = PI (from +X), to angle = PI/2
-    // right: center (-R,0), start (0,0) angle = 0, to angle = -PI/2
-    const a = dir < 0 ? (Math.PI - t * Math.PI / 2) : (0 + t * -Math.PI / 2);
+    const a = a0 + (a1 - a0) * t;
     const ca = Math.cos(a), sa = Math.sin(a);
-    const x0 = cx + ca * inner, z0 = cz + sa * inner;
-    const x1 = cx + ca * outer, z1 = cz + sa * outer;
-    verts.push(x0, 0.08, z0, x1, 0.08, z1);
-    norms.push(0, 1, 0, 0, 1, 0);
-    uvs.push(0, t, 1, t);
+    push(cx + ca * r0, y1, cz + sa * r0, 0, 1, 0, 0, t * vScale);
+    push(cx + ca * r1, y1, cz + sa * r1, 0, 1, 0, 1, t * vScale);
   }
+  const flip = a1 < a0;
   for (let i = 0; i < steps; i++) {
     const a = i * 2;
-    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    if (flip) idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    else idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  // vertical outer / inner walls so the deck has thickness and hides the joint
+  const topCount = (steps + 1) * 2;
+  for (let wall = 0; wall < 2; wall++) {
+    const r = wall === 0 ? r0 : r1;
+    const sign = wall === 0 ? -1 : 1;
+    const wbase = verts.length / 3;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const a = a0 + (a1 - a0) * t;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const nx = ca * sign, nz = sa * sign;
+      push(cx + ca * r, y0, cz + sa * r, nx, 0, nz, t, 0);
+      push(cx + ca * r, y1, cz + sa * r, nx, 0, nz, t, 1);
+    }
+    for (let i = 0; i < steps; i++) {
+      const a = wbase + i * 2;
+      if (wall === 0) idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      else idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
@@ -519,6 +586,22 @@ function makeArcGeom(dir) {
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
+  return g;
+}
+
+function makeArrowGeom() {
+  const s = new THREE.Shape();
+  s.moveTo(0, 1.15);
+  s.lineTo(0.72, -0.05);
+  s.lineTo(0.28, -0.05);
+  s.lineTo(0.28, -1.15);
+  s.lineTo(-0.28, -1.15);
+  s.lineTo(-0.28, -0.05);
+  s.lineTo(-0.72, -0.05);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.08, bevelEnabled: false });
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, 0, 0);
   return g;
 }
 
@@ -761,37 +844,78 @@ class Penguin {
   }
 
   _buildAura() {
-    const haloMat = new THREE.MeshBasicMaterial({
+    // Thin ground ring at the feet so the dark back silhouette stays readable.
+    this.ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.52, 0.032, 8, 28),
+      new THREE.MeshBasicMaterial({
+        color: PHASE_COL[BLOOM],
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      })
+    );
+    this.ring.rotation.x = -Math.PI / 2;
+    this.ring.position.y = 0.04;
+    this.ring.renderOrder = 3;
+    this.root.add(this.ring);
+
+    this.auraLight = new THREE.PointLight(PHASE_COL[BLOOM], 0.28, 1.8, 2);
+    this.auraLight.position.set(0, 0.85, -0.2);
+    this.hop.add(this.auraLight);
+
+    this.sparkG = new THREE.Group();
+    this.hop.add(this.sparkG);
+    this.sparks = [];
+    const sm = new THREE.MeshBasicMaterial({
       color: PHASE_COL[BLOOM],
       transparent: true,
-      opacity: 0.16,
+      opacity: 0.55,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide
+      blending: THREE.AdditiveBlending
     });
-    this.halo = new THREE.Mesh(new THREE.SphereGeometry(0.72, 18, 14), haloMat);
-    this.halo.scale.set(1.2, 1.5, 1.3);
-    this.halo.position.y = 0.62;
-    this.halo.renderOrder = 2;
-    this.hop.add(this.halo);
+    for (let i = 0; i < 8; i++) {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 6), sm.clone());
+      this.sparkG.add(m);
+      this.sparks.push({
+        mesh: m,
+        a: (i / 8) * Math.PI * 2,
+        r: 0.32 + (i % 3) * 0.04,
+        y: 0.18 + (i % 4) * 0.16,
+        sp: 0.7 + (i % 3) * 0.25
+      });
+    }
+    this.rimUniforms = [];
+    this.halo = null;
+    this.rimMesh = null;
+  }
 
-    const rimMat = new THREE.MeshBasicMaterial({
-      color: PHASE_COL_B[BLOOM],
-      transparent: true,
-      opacity: 0.2,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide
-    });
-    this.rimMesh = new THREE.Mesh(new THREE.SphereGeometry(0.68, 16, 12), rimMat);
-    this.rimMesh.scale.set(1.12, 1.45, 1.22);
-    this.rimMesh.position.y = 0.58;
-    this.rimMesh.renderOrder = 1;
-    this.hop.add(this.rimMesh);
-
-    this.auraLight = new THREE.PointLight(PHASE_COL[BLOOM], 1.35, 4.2, 2);
-    this.auraLight.position.set(0, 0.9, -0.35);
-    this.hop.add(this.auraLight);
+  _applyRim(mat) {
+    if (!mat || mat.userData._rimHook) return;
+    mat.userData._rimHook = true;
+    const uni = {
+      uRimColor: { value: new THREE.Color(PHASE_COL[BLOOM]) },
+      uRimAmt: { value: 1.15 }
+    };
+    mat.userData.rimUni = uni;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uRimColor = uni.uRimColor;
+      shader.uniforms.uRimAmt = uni.uRimAmt;
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          '#include <common>\nuniform vec3 uRimColor;\nuniform float uRimAmt;'
+        )
+        .replace(
+          '#include <opaque_fragment>',
+          'float rimN = dot(normalize(normal), normalize(-vViewPosition));\n' +
+          'float rim = pow(clamp(1.0 - abs(rimN), 0.0, 1.0), 2.6);\n' +
+          'outgoingLight += uRimColor * rim * uRimAmt;\n' +
+          '#include <opaque_fragment>'
+        );
+    };
+    mat.needsUpdate = true;
+    this.rimUniforms.push(uni);
   }
 
   async load() {
@@ -824,6 +948,7 @@ class Penguin {
         if (!m) return;
         m.roughness = m.roughness != null ? Math.min(0.85, m.roughness + 0.08) : 0.6;
         m.metalness = 0;
+        this._applyRim(m);
         const n = (m.name || '').toLowerCase();
         if (n === 'hoodie') this.hoodieMats.push(m);
         else if (n === 'hoodietrim' || n === 'hoodiestring') this.trimMats.push(m);
@@ -963,9 +1088,11 @@ class Penguin {
   setForm(phase, instant = false) {
     this.phase = phase;
     const a = PHASE_COL[phase], b = PHASE_COL_B[phase];
-    if (this.halo) this.halo.material.color.setHex(a);
-    if (this.rimMesh) this.rimMesh.material.color.setHex(b);
+    const rimCol = phase === AURORA ? b : a;
+    if (this.rimUniforms) this.rimUniforms.forEach(u => { u.uRimColor.value.setHex(rimCol); u.uRimAmt.value = phase === AURORA ? 1.35 : 1.15; });
+    if (this.ring) this.ring.material.color.setHex(a);
     if (this.auraLight) this.auraLight.color.setHex(a);
+    if (this.sparks) this.sparks.forEach((s, i) => s.mesh.material.color.setHex(i % 2 ? a : b));
     // Clothing is never recolored by the form switch — only the glow / rim / aura changes.
     if (!instant) this._burst();
   }
@@ -1017,26 +1144,30 @@ class Penguin {
     this.blob.scale.set(shadowScale, shadowScale, 1);
     this.blob.material.opacity = 0.38 * shadowScale;
 
-    // Aura pulse and Aurora teal-violet crawl. Clothing stays put.
-    const pulse = 1 + Math.sin((ev.time || this.runT) * 3.2) * 0.06;
-    if (this.halo) {
-      this.halo.scale.set(1.2 * pulse, 1.5 * pulse, 1.3 * pulse);
-      this.halo.material.opacity = 0.12 + 0.06 * pulse;
+    // Thin rim (shader) + ground ring + faint sparks. Clothing and the dark back stay put.
+    const time = ev.time || this.runT;
+    const pulse = 1 + Math.sin(time * 3.2) * 0.05;
+    if (this.phase === AURORA) {
+      const w = 0.5 + 0.5 * Math.sin(time * 2.4);
+      const mixC = col(PHASE_COL[AURORA]).lerp(col(PHASE_COL_B[AURORA]), w);
+      if (this.rimUniforms) this.rimUniforms.forEach(u => u.uRimColor.value.copy(mixC));
+      if (this.ring) this.ring.material.color.copy(mixC);
+      if (this.auraLight) this.auraLight.color.copy(mixC);
     }
-    if (this.rimMesh) {
-      this.rimMesh.scale.set(1.12 * pulse, 1.45 * pulse, 1.22 * pulse);
-      if (this.phase === AURORA) {
-        const w = 0.5 + 0.5 * Math.sin((ev.time || 0) * 2.4);
-        this.rimMesh.material.color.lerpColors(col(PHASE_COL[AURORA]), col(PHASE_COL_B[AURORA]), w);
-        if (this.auraLight) this.auraLight.color.lerpColors(col(PHASE_COL[AURORA]), col(PHASE_COL_B[AURORA]), w);
-        this.rimMesh.material.opacity = 0.28;
-      } else {
-        this.rimMesh.material.color.setHex(PHASE_COL_B[BLOOM]);
-        this.rimMesh.material.opacity = 0.2;
-        if (this.auraLight) this.auraLight.color.setHex(PHASE_COL[BLOOM]);
+    if (this.ring) {
+      const s = (ev.jumpY > 0.05) ? clamp(1 - ev.jumpY * 0.35, 0.45, 1) : 1;
+      this.ring.scale.set(s * pulse, s * pulse, 1);
+      this.ring.material.opacity = 0.55 + 0.15 * pulse;
+    }
+    if (this.auraLight) this.auraLight.intensity = 0.22 + pulse * 0.1;
+    if (this.sparks) {
+      for (const s of this.sparks) {
+        s.a += dt * s.sp;
+        s.mesh.position.set(Math.cos(s.a) * s.r, s.y + Math.sin(s.a * 2 + time) * 0.04, Math.sin(s.a) * s.r);
+        s.mesh.material.opacity = 0.28 + 0.25 * (0.5 + 0.5 * Math.sin(s.a * 3 + time));
+        s.mesh.scale.setScalar(0.7 + 0.3 * pulse);
       }
     }
-    if (this.auraLight) this.auraLight.intensity = 0.7 + pulse * 0.25;
 
     if (this.burst.length) {
       for (let i = this.burst.length - 1; i >= 0; i--) {
@@ -1087,7 +1218,7 @@ class World {
     this.dirTarget = new THREE.Object3D();
     scene.add(this.dirTarget);
     this.dir.target = this.dirTarget;
-    this.fill = new THREE.PointLight(PHASE_COL[0], 0.9, 9, 2);
+    this.fill = new THREE.PointLight(PHASE_COL[0], 0.32, 4.5, 2);
     scene.add(this.fill);
 
     this.terrainMat = makeTerrainMat(SEASONS[0]);
@@ -1302,7 +1433,8 @@ class World {
     g.userData.segId = seg.id;
     const mat = this._pathMatFor(season);
     if (seg.type === 'straight') {
-      const len = Math.max(0.2, seg.length);
+      // Stop the slab at the corner; the arc overlaps backward so the end cap is hidden.
+      const len = Math.max(0.2, seg.length - 0.12);
       const slab = new THREE.Mesh(this.geo.pathSlab, mat);
       slab.scale.z = len;
       slab.position.y = 0.02;
@@ -1321,9 +1453,18 @@ class World {
       g.rotation.y = seg.yaw0;
     } else {
       const dir = seg.dir || (seg.type === 'left' ? -1 : 1);
-      const arc = new THREE.Mesh(makeArcGeom(dir), mat);
+      const arcMat = mat.clone();
+      arcMat.side = THREE.DoubleSide;
+      arcMat.polygonOffset = true;
+      arcMat.polygonOffsetFactor = -1;
+      arcMat.polygonOffsetUnits = -2;
+      const arc = new THREE.Mesh(makeArcGeom(dir, 'slab'), arcMat);
       arc.receiveShadow = true;
-      g.add(arc);
+      arc.renderOrder = 1;
+      const curbIn = new THREE.Mesh(makeArcGeom(dir, 'curbIn'), this.curbMat);
+      const curbOut = new THREE.Mesh(makeArcGeom(dir, 'curbOut'), this.curbMat);
+      curbIn.castShadow = curbOut.castShadow = true;
+      g.add(arc, curbIn, curbOut);
       g.position.set(seg.x0, 0, seg.z0);
       g.rotation.y = seg.yaw0;
     }
@@ -1337,24 +1478,28 @@ class World {
     seg._decorated = season + ':' + seg.id;
     if (seg.type !== 'straight') return;
     const step = 4.2;
+    const path = this._pathRef;
+    const pad = pathClearance();
     for (let d = seg.dist0 + 1.5; d < seg.dist1; d += step) {
       for (const side of [-1, 1]) {
-        const lat = side * rand(4.5, 8.5);
+        const lat = side * rand(5.6, 9.2);
         const pose = poseAtStraight(seg, d + rand(-0.8, 0.8), lat);
+        if (path && onAnyPath(path, pose.x, pose.z, pad)) continue;
         this._placeProp('tree', pose.x, pose.z, season);
         if (Math.random() < 0.7) {
-          const p2 = poseAtStraight(seg, d + 1.2, side * rand(3.6, 6.8));
-          this._placeProp('bush', p2.x, p2.z, season);
+          const p2 = poseAtStraight(seg, d + 1.2, side * rand(5.4, 8.4));
+          if (!(path && onAnyPath(path, p2.x, p2.z, pad))) this._placeProp('bush', p2.x, p2.z, season);
         }
         if (season === 0 && Math.random() < 0.8) {
-          const p3 = poseAtStraight(seg, d + 0.6, side * rand(3.4, 6.2));
-          this._placeProp('flower', p3.x, p3.z, season);
+          const p3 = poseAtStraight(seg, d + 0.6, side * rand(5.2, 7.8));
+          if (!(path && onAnyPath(path, p3.x, p3.z, pad))) this._placeProp('flower', p3.x, p3.z, season);
         }
       }
     }
   }
 
   syncPath(path, season, playerDist) {
+    this._pathRef = path;
     const visuals = path.visuals();
     const live = new Set(visuals.map(s => s.id));
     for (const [id, mesh] of this._segMeshes) {
@@ -1372,30 +1517,15 @@ class World {
   }
 
   _cullPropsOnPath(path) {
-    const half = PATH_W * 0.5 + 1.15;
+    const pad = pathClearance();
     for (const p of this.props) {
-      if (!p.mesh || !p.mesh.visible) continue;
+      if (!p.mesh) continue;
       const x = p.mesh.position.x, z = p.mesh.position.z;
-      for (const seg of path.segs) {
-        let pose;
-        if (seg.type === 'straight') {
-          const v = yawVec(seg.yaw0);
-          const dx = x - seg.x0, dz = z - seg.z0;
-          const along = dx * v.fx + dz * v.fz;
-          if (along < -1 || along > seg.length + 1) continue;
-          const lat = Math.abs(dx * v.sx + dz * v.sz);
-          if (lat < half) { p.mesh.visible = false; break; }
-        } else {
-          const mid = path._poseSeg(seg, (seg.dist0 + seg.dist1) * 0.5, 0);
-          const d = Math.hypot(x - mid.x, z - mid.z);
-          if (d < TURN_R + half) { p.mesh.visible = false; break; }
-        }
-      }
+      if (onAnyPath(path, x, z, pad)) p.mesh.visible = false;
     }
   }
 
   _syncChevrons(path) {
-    // Remove old chevrons and place new ones approaching the pending turn.
     for (const c of this.chevL) this.pathG.remove(c);
     for (const c of this.chevR) this.pathG.remove(c);
     this.chevL.length = 0; this.chevR.length = 0;
@@ -1403,24 +1533,28 @@ class World {
     if (!p || p.committed) return;
     const showL = p.type === 'left' || p.type === 'tee';
     const showR = p.type === 'right' || p.type === 'tee';
-    for (let i = 1; i <= 3; i++) {
-      const d = p.dist - 2.4 * i - 1.2;
-      if (d < 0) continue;
+    if (!this.mArrow) {
+      this.mArrow = std(0xfff4c4, { roughness: 0.35, emissive: 0xffe088, emissiveIntensity: 0.85 });
+    }
+    // Runway of large painted arrows, spaced so they stay readable far away without overlapping.
+    const marks = [24, 16, 9];
+    for (let i = 0; i < marks.length; i++) {
+      const d = p.dist - marks[i];
+      if (d < 1) continue;
       const pose = path.resolve(d, 0, false);
-      if (showL) {
-        const m = new THREE.Mesh(this.geo.chevron, this.mChevron);
-        m.rotation.set(-Math.PI / 2, 0, pose.yaw + Math.PI / 2);
-        m.position.set(pose.x + pose.sx * -0.85, 0.22, pose.z + pose.sz * -0.85);
-        m.scale.set(1.3, 1.6, 1.3);
-        this.pathG.add(m); this.chevL.push(m);
-      }
-      if (showR) {
-        const m = new THREE.Mesh(this.geo.chevron, this.mChevron);
-        m.rotation.set(-Math.PI / 2, 0, pose.yaw - Math.PI / 2);
-        m.position.set(pose.x + pose.sx * 0.85, 0.22, pose.z + pose.sz * 0.85);
-        m.scale.set(1.3, 1.6, 1.3);
-        this.pathG.add(m); this.chevR.push(m);
-      }
+      const sc = 1.05 + (1 - i / marks.length) * 0.28;
+      const place = (dirSign, bucket) => {
+        const m = new THREE.Mesh(this.geo.arrow, this.mArrow);
+        // Point left (dirSign -1) or right (+1) relative to the current heading.
+        m.rotation.y = pose.yaw + (dirSign < 0 ? Math.PI / 2 : -Math.PI / 2);
+        const lat = (showL && showR) ? dirSign * 0.95 : dirSign * 0.15;
+        m.position.set(pose.x + pose.sx * lat, 0.14, pose.z + pose.sz * lat);
+        m.scale.set(sc, 1, sc);
+        this.pathG.add(m);
+        bucket.push(m);
+      };
+      if (showL) place(-1, this.chevL);
+      if (showR) place(1, this.chevR);
     }
   }
 
