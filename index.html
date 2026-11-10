@@ -11,7 +11,7 @@
 <title>Season Shift</title>
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
-<!-- SEASON_SHIFT_V4_3 -->
+<!-- SEASON_SHIFT_V4_4 -->
 <style>
 @font-face{font-family:Fredoka;font-style:normal;font-weight:600;font-display:swap;
   src:url('assets/fonts/fredoka-latin-600-normal.woff2') format('woff2'),
@@ -109,7 +109,8 @@ html,body,#app{margin:0;padding:0;width:100%;height:100%;overflow:hidden;backgro
 .swatch{width:44px;height:44px;border-radius:14px;flex:none;box-shadow:inset 0 -4px 0 rgba(0,0,0,.15),0 0 0 2px #fff}
 #over .sheet{text-align:center;padding:28px 20px 24px}
 #over-title{font-size:44px;font-weight:700;margin:0 0 6px;color:#d94a3a}
-#over-score{font-size:56px;font-weight:700;line-height:1;margin:8px 0 2px}
+#over-score-label{font-size:16px;font-weight:700;letter-spacing:.14em;opacity:.7;margin-top:10px}
+#over-score{font-size:56px;font-weight:700;line-height:1;margin:4px 0 2px}
 #over-best, #over-coins{font-size:20px;font-weight:700;margin:4px 0;opacity:.9}
 #over-new{color:#d98a10;font-size:22px;font-weight:700;margin:8px 0;min-height:1.2em}
 .over-btns{display:flex;gap:10px;margin-top:16px}
@@ -168,12 +169,13 @@ html,body,#app{margin:0;padding:0;width:100%;height:100%;overflow:hidden;backgro
     <div id="over" class="hidden">
       <div class="sheet">
         <div id="over-title">TRIP OVER</div>
+        <div id="over-score-label">SCORE</div>
         <div id="over-score">0</div>
         <div id="over-best">BEST  0</div>
-        <div id="over-coins">COINS  +0</div>
+        <div id="over-coins">COINS COLLECTED  0</div>
         <div id="over-new"></div>
         <div class="over-btns">
-          <button class="hit" id="btn-retry">RETRY</button>
+          <button class="hit" id="btn-retry">PLAY AGAIN</button>
           <button class="hit" id="btn-home">HOME</button>
         </div>
       </div>

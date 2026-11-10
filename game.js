@@ -1,10 +1,10 @@
-// Season Shift v4.3 — SEASON_SHIFT_V4_3
+// Season Shift v4.4 — SEASON_SHIFT_V4_4
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, tilt lanes, swipe jump-slide-turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_3';
+const VERSION = 'SEASON_SHIFT_V4_4';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -179,6 +179,8 @@ const Sfx = {
   ctx: null,
   master: null,
   _noise: null,
+  muted: false,
+  _coinLast: 0,
   unlock() {
     if (!this.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
@@ -193,11 +195,16 @@ const Sfx = {
       for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
       this._noise = buf;
     }
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (this.ctx && this.ctx.state === 'suspended') {
+      const p = this.ctx.resume();
+      if (p && p.catch) p.catch(() => {});
+    }
   },
+  setMuted(m) { this.muted = !!m; },
+  _ok() { return !!(this.ctx && this.ctx.state === 'running' && !this.muted && this.master); },
   _out() { return this.master || (this.ctx && this.ctx.destination); },
   tone(f1, f2, dur, type = 'square', vol = 0.1, delay = 0) {
-    const c = this.ctx; if (!c || c.state !== 'running') return;
+    const c = this.ctx; if (!this._ok()) return;
     const o = c.createOscillator(), g = c.createGain(), t = c.currentTime + delay;
     o.type = type; o.frequency.setValueAtTime(f1, t);
     o.frequency.exponentialRampToValueAtTime(Math.max(f2, 1), t + dur);
@@ -207,7 +214,7 @@ const Sfx = {
     o.connect(g); g.connect(this._out()); o.start(t); o.stop(t + dur + 0.03);
   },
   whoosh(dur, vol, fFrom, fTo) {
-    const c = this.ctx; if (!c || c.state !== 'running' || !this._noise) return;
+    const c = this.ctx; if (!this._ok() || !this._noise) return;
     const src = c.createBufferSource(); src.buffer = this._noise;
     const bp = c.createBiquadFilter(); bp.type = 'bandpass';
     bp.frequency.setValueAtTime(fFrom, c.currentTime);
@@ -220,19 +227,45 @@ const Sfx = {
     src.start(t); src.stop(t + dur + 0.02);
   },
   coin() {
-    this.tone(988, 1318, 0.09, 'triangle', 0.16);
-    this.tone(1318, 1976, 0.14, 'triangle', 0.12, 0.05);
-    this.tone(1976, 2638, 0.08, 'sine', 0.06, 0.09);
+    if (!this._ok()) return;
+    const now = this.ctx.currentTime;
+    const gap = now - (this._coinLast || 0);
+    this._coinLast = now;
+    const spread = (Math.random() - 0.5) * 90;
+    const vol = gap < 0.09 ? 0.55 : (gap < 0.16 ? 0.78 : 1);
+    this.tone(988 + spread, 1318 + spread, 0.08, 'triangle', 0.13 * vol);
+    this.tone(1318 + spread, 1760 + spread, 0.12, 'triangle', 0.09 * vol, 0.045);
   },
   coinMiss() { this.tone(240, 180, 0.07, 'sine', 0.05); },
   jump() {
-    this.tone(220, 620, 0.11, 'sine', 0.16);
-    this.tone(620, 280, 0.16, 'sine', 0.1, 0.08);
+    this.whoosh(0.12, 0.14, 400, 1400);
+    this.tone(240, 640, 0.12, 'sine', 0.14);
+    this.tone(640, 300, 0.14, 'sine', 0.08, 0.08);
   },
-  slide() { this.whoosh(0.18, 0.22, 900, 220); this.tone(340, 140, 0.16, 'sine', 0.05); },
-  lane() { this.whoosh(0.1, 0.2, 700, 1100); this.tone(520, 640, 0.06, 'sine', 0.05); },
+  slide() { this.whoosh(0.2, 0.2, 1000, 180); this.tone(340, 140, 0.16, 'sine', 0.05); },
+  lane() { this.whoosh(0.1, 0.16, 700, 1200); this.tone(520, 640, 0.06, 'sine', 0.045); },
   turn() { this.whoosh(0.16, 0.24, 500, 1400); this.tone(440, 660, 0.1, 'sine', 0.07); },
   nearMiss() { this.whoosh(0.14, 0.18, 1200, 400); this.tone(880, 440, 0.08, 'triangle', 0.05); },
+  step() {
+    if (!this._ok() || !this._noise) return;
+    const c = this.ctx, t = c.currentTime;
+    const f0 = 85 + Math.random() * 35;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(f0 * 0.55, 40), t + 0.06);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.048, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    o.connect(g); g.connect(this._out()); o.start(t); o.stop(t + 0.08);
+    const src = c.createBufferSource(); src.buffer = this._noise;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(240 + Math.random() * 80, t);
+    const ng = c.createGain();
+    ng.gain.setValueAtTime(0.05, t);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    src.connect(lp); lp.connect(ng); ng.connect(this._out());
+    src.start(t); src.stop(t + 0.08);
+  },
   phase(p) {
     if (p === AURORA) {
       this.tone(659, 988, 0.2, 'sine', 0.11);
@@ -1945,6 +1978,7 @@ class Game {
     this.geo = geoCache();
     this.music = new Music();
     this.music.setMuted(!!this.save.muted);
+    Sfx.setMuted(!!this.save.muted);
     this.path = new PathSystem();
     this.tilt = new TiltSteer();
 
@@ -1985,6 +2019,7 @@ class Game {
     this.speed = 11; this.elapsed = 0; this.dist = 0;
     this.score = 0; this.runCoins = 0;
     this.shake = 0; this.deadT = 0; this.invuln = 0;
+    this.prevPz = 0; this.hitZ = null; this.stoppedAt = null; this._stepStamp = null;
     this.camX = 0; this.camTilt = 0; this.camFov = 54;
     this.camYaw = 0;
     this.fovKick = 0;
@@ -2045,17 +2080,18 @@ class Game {
       overCoins: document.getElementById('over-coins'),
       overNew: document.getElementById('over-new')
     };
-    document.getElementById('btn-start').addEventListener('click', ev => { ev.stopPropagation(); this._requestMotion(); this.startRun(); });
+    document.getElementById('btn-start').addEventListener('click', ev => { ev.stopPropagation(); Sfx.unlock(); this.music.unlock(); this._requestMotion(); this.startRun(); });
     document.getElementById('btn-shop').addEventListener('click', ev => { ev.stopPropagation(); this.openShop(); });
     document.getElementById('btn-shop-close').addEventListener('click', ev => { ev.stopPropagation(); this.closeShop(); });
     document.getElementById('tab-upgrades').addEventListener('click', ev => { ev.stopPropagation(); this.shopTab = 'upgrades'; this.renderShop(); });
     document.getElementById('tab-costumes').addEventListener('click', ev => { ev.stopPropagation(); this.shopTab = 'costumes'; this.renderShop(); });
-    document.getElementById('btn-retry').addEventListener('click', ev => { ev.stopPropagation(); this._requestMotion(); this.startRun(); });
+    document.getElementById('btn-retry').addEventListener('click', ev => { ev.stopPropagation(); Sfx.unlock(); this.music.unlock(); this._requestMotion(); this.startRun(); });
     document.getElementById('btn-home').addEventListener('click', ev => { ev.stopPropagation(); this._goHome(); });
     this.$.mute.addEventListener('click', ev => {
       ev.stopPropagation();
       this.save.muted = !this.save.muted;
       this.music.setMuted(this.save.muted);
+      Sfx.setMuted(this.save.muted);
       saveSave(this.save);
       this._refreshMute();
     });
@@ -2143,6 +2179,7 @@ class Game {
       const t = e.changedTouches ? e.changedTouches[0] : e;
       return [t.clientX, t.clientY, e.target];
     };
+    window.addEventListener('touchstart', () => { Sfx.unlock(); this.music.unlock(); }, { passive: true });
     window.addEventListener('pointerdown', e => { const [x, y, t] = evXY(e); down(x, y, t); });
     window.addEventListener('pointermove', e => { const [x, y] = evXY(e); move(x, y); });
     window.addEventListener('pointerup', e => { const [x, y] = evXY(e); up(x, y); });
@@ -2192,7 +2229,7 @@ class Game {
     const n = clamp(this.lane + d, -1, 1);
     if (n !== this.lane) {
       this.lane = n;
-      if (!fromTilt) Sfx.lane();
+      Sfx.lane();
     }
   }
   turn(dir) {
@@ -2465,6 +2502,7 @@ class Game {
     this.penguin.root.rotation.set(0, 0, 0);
     this.elapsed = 0; this.dist = 0; this.score = 0; this.runCoins = 0;
     this.shake = 0; this.deadT = 0; this.invuln = 0;
+    this.prevPz = 0; this.hitZ = null; this.stoppedAt = null; this._stepStamp = null;
     const hs = this.save.upgrades.headStart | 0;
     this.elapsed = hs * 3.5;
     this.speed = this._calcSpeed();
@@ -2604,9 +2642,16 @@ class Game {
     if (!o || !o.live || o.taken) return false;
     if (!o.mesh || !o.mesh.visible) return false;
     if (this.offPath) return false;
-    const dz = o.z - this.pz;
-    if (dz < 0.12 || dz > 1.05) return false;
     if (o.type === 'coin') return false;
+    // Swept path-distance test. The old 0.12–1.05 window was narrower than
+    // one high-speed frame (up to ~1.3 units), so a hit could be missed or
+    // only registered after the runner had already overlapped the prop.
+    const prev = (this.prevPz != null) ? this.prevPz : this.pz;
+    const z0 = Math.min(prev, this.pz);
+    const z1 = Math.max(prev, this.pz);
+    const hitNear = o.z - 1.15;
+    const hitFar = o.z + 0.2;
+    if (z1 < hitNear || z0 > hitFar) return false;
     const px = this.px;
     if (o.span === 'all' || (o.type === 'gate' && o.span === 'all')) {
       // full width
@@ -2635,13 +2680,30 @@ class Game {
       o.live = false; o.mesh.visible = false;
       return;
     }
-    this._die();
+    this._die(o);
   }
-  _die() {
+  _die(hitObj) {
+    if (this.state === 'dying' || this.state === 'over') return;
     this.state = 'dying';
     this.deadT = 0;
     this.shake = 0.7;
+    this.jumpV = Math.min(this.jumpV, 0);
+    // Obstacle hits stop on the spot, just in front of the prop. A missed
+    // turn still lets the panda run off the edge, then uses the same overlay.
+    if (hitObj && !this.offPath) {
+      const standOff = 0.55;
+      this.pz = Math.min(this.pz, hitObj.z - standOff);
+      this.prevPz = this.pz;
+      this.speed = 0;
+      this.hitZ = hitObj.z;
+      this.stoppedAt = this.pz;
+    } else if (!this.offPath) {
+      this.speed = 0;
+    }
     Sfx.hit();
+    if (this.penguin && this.penguin.ready) {
+      this.penguin._play(this.penguin.actions.Fall ? 'Fall' : 'Jump', 0.08);
+    }
     if (navigator.vibrate) try { navigator.vibrate([30, 40, 30]); } catch (e) {}
   }
   _endRun() {
@@ -2659,7 +2721,10 @@ class Game {
     this.$.hud.classList.add('hidden');
     this.$.overScore.textContent = String(sc);
     this.$.overBest.textContent = 'BEST  ' + (this.save.seasonBest[this.season] | 0);
-    this.$.overCoins.textContent = 'COINS  +' + earned;
+    const collected = this.runCoins | 0;
+    this.$.overCoins.textContent = (this.coinMul > 1 && earned !== collected)
+      ? ('COINS COLLECTED  ' + collected + '  (+' + earned + ')')
+      : ('COINS COLLECTED  ' + collected);
     this.$.overNew.textContent = isNew && sc > 0 ? 'NEW BEST!' : '';
     this._refreshCoins();
   }
@@ -2689,6 +2754,7 @@ class Game {
     if (playing) {
       this.elapsed += dt;
       this.speed = this._calcSpeed();
+      this.prevPz = this.pz;
       if (!this.offPath) this.pz += this.speed * dt;
       this.dist += this.speed * dt;
       this.score = Math.floor(this.dist * 8 + this.runCoins * 10);
@@ -2730,9 +2796,9 @@ class Game {
       }
     } else if (dying) {
       this.deadT += dt;
-      this.speed = Math.max(0, this.speed - 18 * dt);
-      if (!this.offPath) this.pz += this.speed * dt;
-      if (this.deadT > 0.85) this._endRun();
+      if (this.offPath) this.speed = Math.max(0, this.speed - 18 * dt);
+      else this.speed = 0;
+      if (this.deadT > 1.0) this._endRun();
     } else if (this.state === 'over') {
       this.deadT += dt;
     }
@@ -2794,7 +2860,7 @@ class Game {
       lean: this.lean + this.turnLean,
       turning: !!(this.snap && this.snap.t < this.snap.dur),
       turnDir: this.snap ? this.snap.dir : 0,
-      falling: dying || (this.offPath && this.jumpY < 0.1),
+      falling: dying || this.state === 'over' || (this.offPath && this.jumpY < 0.1),
       fallT: this.deadT,
       onGround: this.jumpY <= 0.02,
       homeThreeQ: home,
@@ -2802,6 +2868,7 @@ class Game {
     });
     if (this.invuln > 0 && playing) this.penguin.root.visible = (Math.sin(this.invuln * 30) > 0);
     else this.penguin.root.visible = true;
+    this._tickSteps(playing);
 
     this.world.update(dt, this.pz, this.px, this.speed, this.phase, this.pose);
     this.world.fill.position.set(this.wx, 1.1 + Math.max(0, this.jumpY), this.wz);
@@ -2819,6 +2886,14 @@ class Game {
     this.fovKick = Math.max(0, this.fovKick - dt * 10);
     this._camera(dt);
     if (playing) this._hud();
+  }
+
+  _tickSteps(playing) {
+    const running = playing && !this.offPath && this.jumpY <= 0.02 && this.slideT <= 0;
+    if (!running) { this._stepStamp = null; return; }
+    const stamp = Math.floor(this.penguin.runT * 2);
+    if (this._stepStamp != null && stamp !== this._stepStamp) Sfx.step();
+    this._stepStamp = stamp;
   }
 
   _tickEntities(dt) {
@@ -2976,6 +3051,9 @@ class Game {
       get jumpY() { return self.jumpY; },
       get slideT() { return self.slideT; },
       get offPath() { return self.offPath; },
+      get hitZ() { return self.hitZ; },
+      get stoppedAt() { return self.stoppedAt; },
+      get deadT() { return self.deadT; },
       get save() { return self.save; },
       get VERSION() { return VERSION; },
       get ready() { return !!self.penguin.ready; },
