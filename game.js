@@ -1,10 +1,10 @@
-// Season Shift v4.4 — SEASON_SHIFT_V4_4
+// Season Shift v4.5 — SEASON_SHIFT_V4_5
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
-// Path corners / T-junctions, tilt lanes, swipe jump-slide-turn, Bloom/Aurora theme.
+// Path corners / T-junctions, swipe lanes, tilt turns, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_4';
+const VERSION = 'SEASON_SHIFT_V4_5';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -23,6 +23,14 @@ const SPAWN_AHEAD = 72;
 const WARMUP = 36;
 const MAX_DT = 0.05;
 const PATH_W = 6.3;
+const TILT_TURN_ON = 18;   // degrees of gamma from the calibrated neutral
+const TILT_TURN_OFF = 8;   // re-arm hysteresis so one tilt cannot double-turn
+const DASH_LEN = 0.70;
+const DASH_GAP = 0.62;
+const DASH_W = 0.09;
+const DASH_Y = 0.115;
+const LANE_MARKS = [-1.5 * LANE_W, -0.5 * LANE_W, 0.5 * LANE_W, 1.5 * LANE_W];
+const CORNER_SAFE_SEC = 1.75; // no obstacles/gates for this many seconds after a corner
 
 const SEASONS = [
   { id: 'spring', name: 'SPRING', tag: 'Blossom Trails',
@@ -122,6 +130,7 @@ window.__VERSION = VERSION;
 window.__SHOP = { UPGRADES, COSTUMES };
 window.__SEASONS = SEASONS;
 window.__PHASE = { BLOOM, AURORA, NAME: PHASE_NAME, COL: PHASE_COL, COL_B: PHASE_COL_B };
+window.__TILT = { ON: TILT_TURN_ON, OFF: TILT_TURN_OFF };
 
 // ---------------- save ----------------
 function defaultSave() {
@@ -383,19 +392,6 @@ function makePathTexture() {
   g.addColorStop(1, '#8a6a3a');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 128, 256);
-  ctx.fillStyle = 'rgba(255,255,245,0.85)';
-  const lanes = [128 * (1.5 * LANE_W) / PATH_W, 128 * 0.5]; // unused, draw by fractions
-  const mid = 64;
-  const dw = (LANE_W / PATH_W) * 128;
-  ctx.lineWidth = 3;
-  ctx.setLineDash([18, 16]);
-  for (const x of [mid - dw * 0.5, mid + dw * 0.5, mid - dw * 1.5, mid + dw * 1.5]) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, 256);
-    ctx.strokeStyle = 'rgba(255,252,240,0.9)';
-    ctx.stroke();
-  }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.RepeatWrapping;
@@ -405,6 +401,122 @@ function makePathTexture() {
 }
 let _pathTex = null;
 function pathTex() { return _pathTex || (_pathTex = makePathTexture()); }
+
+function cornerArcRadius(lx, side) {
+  const half = PATH_W * 0.5;
+  return side > 0 ? Math.abs(lx + half) : Math.abs(half - lx);
+}
+function cornerCenter(side) {
+  const half = PATH_W * 0.5;
+  return side > 0 ? { x: -half, z: -half } : { x: half, z: -half };
+}
+function cornerExitPoint(lx, side) {
+  const half = PATH_W * 0.5;
+  return side > 0 ? { x: -half, z: lx } : { x: half, z: -lx };
+}
+function makeDashMat() {
+  return new THREE.MeshBasicMaterial({
+    color: 0xfffcf0,
+    transparent: true,
+    opacity: 0.92,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2
+  });
+}
+function _pushDashQuad(pos, nor, ax, az, bx, bz, y, halfW) {
+  const dx = bx - ax, dz = bz - az;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.04) return;
+  const ux = dx / len, uz = dz / len;
+  const rx = -uz * halfW, rz = ux * halfW;
+  const y2 = y;
+  // 2 triangles, 6 verts
+  const verts = [
+    ax - rx, y2, az - rz,
+    ax + rx, y2, az + rz,
+    bx - rx, y2, bz - rz,
+    ax + rx, y2, az + rz,
+    bx + rx, y2, bz + rz,
+    bx - rx, y2, bz - rz
+  ];
+  for (const v of verts) pos.push(v);
+  for (let i = 0; i < 6; i++) { nor.push(0, 1, 0); }
+}
+function _emitDashes(pos, nor, x0, z0, x1, z1, y, phase0) {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  if (len < 0.05) return;
+  const ux = (x1 - x0) / len, uz = (z1 - z0) / len;
+  const period = DASH_LEN + DASH_GAP;
+  let s = ((phase0 % period) + period) % period;
+  let t;
+  if (s < DASH_LEN) {
+    const b = Math.min(len, DASH_LEN - s);
+    _pushDashQuad(pos, nor, x0, z0, x0 + ux * b, z0 + uz * b, y, DASH_W * 0.5);
+    t = (DASH_LEN - s) + DASH_GAP;
+  } else {
+    t = period - s;
+  }
+  while (t < len - 0.02) {
+    const a = t;
+    const b = Math.min(len, t + DASH_LEN);
+    if (b - a > 0.04) {
+      _pushDashQuad(pos, nor, x0 + ux * a, z0 + uz * a, x0 + ux * b, z0 + uz * b, y, DASH_W * 0.5);
+    }
+    t += period;
+  }
+}
+function _emitArcDashes(pos, nor, cx, cz, r, a0, a1, y, phase0) {
+  if (r < 0.12) return;
+  let dA = a1 - a0;
+  while (dA > Math.PI) dA -= Math.PI * 2;
+  while (dA < -Math.PI) dA += Math.PI * 2;
+  // Prefer the quarter-ish shorter arc; if almost equal, keep the sign of dA
+  const arcLen = Math.abs(dA) * r;
+  if (arcLen < 0.05) return;
+  const dir = dA >= 0 ? 1 : -1;
+  const period = DASH_LEN + DASH_GAP;
+  let s = ((phase0 % period) + period) % period;
+  const angAt = (t) => a0 + dir * (t / r);
+  const xz = (t) => {
+    const a = angAt(t);
+    return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r };
+  };
+  const emit = (t0, t1) => {
+    const steps = Math.max(2, Math.ceil((t1 - t0) / 0.11));
+    let p = xz(t0);
+    for (let i = 1; i <= steps; i++) {
+      const t = t0 + (t1 - t0) * (i / steps);
+      const q = xz(t);
+      _pushDashQuad(pos, nor, p.x, p.z, q.x, q.z, y, DASH_W * 0.5);
+      p = q;
+    }
+  };
+  let t;
+  if (s < DASH_LEN) {
+    emit(0, Math.min(arcLen, DASH_LEN - s));
+    t = (DASH_LEN - s) + DASH_GAP;
+  } else {
+    t = period - s;
+  }
+  while (t < arcLen - 0.02) {
+    const b = Math.min(arcLen, t + DASH_LEN);
+    if (b - t > 0.04) emit(t, b);
+    t += period;
+  }
+}
+function finishDashMesh(pos, nor, mat) {
+  if (pos.length < 18) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  const m = new THREE.Mesh(geo, mat);
+  m.receiveShadow = false;
+  m.castShadow = false;
+  m.renderOrder = 2;
+  return m;
+}
 
 function geoCache() {
   return {
@@ -639,6 +751,7 @@ class PathSystem {
     st.x0 = start.x; st.z0 = start.z; st.yaw0 = yaw1;
     st.x1 = start.x + v.fx * afterLen; st.z1 = start.z + v.fz * afterLen; st.yaw1 = yaw1;
     st.cap0 = 'corner'; st.cap1 = 'flat';
+    st.turnDir = dir;
     return {
       segs: [st],
       end: { x: st.x1, z: st.z1, yaw: st.yaw1, dist: st.dist1 }
@@ -668,7 +781,10 @@ class PathSystem {
     if (!branch) return false;
     p.committed = true;
     p.chosen = dir;
-    if (this.pendingCorner) this.segs.push(this.pendingCorner);
+    if (this.pendingCorner) {
+      this.pendingCorner.chosen = dir;
+      this.segs.push(this.pendingCorner);
+    }
     for (const seg of branch.segs) this.segs.push(seg);
     this.end = branch.end;
     const unused = dir < 0 ? this.branches.right : this.branches.left;
@@ -1233,6 +1349,7 @@ class World {
     this.pathMat = std(0xc9a067, { roughness: 0.72, map: pathTex() });
     this.pathMat.map.repeat.set(1, 1);
     this.curbMat = std(0x8a6230, { roughness: 0.7 });
+    this.dashMat = makeDashMat();
     this.chevL = [];
     this.chevR = [];
 
@@ -1400,18 +1517,28 @@ class World {
     return this.pathMat;
   }
 
-  _ensureSegMesh(seg, season) {
-    if (this._segMeshes.has(seg.id)) return this._segMeshes.get(seg.id);
+  _ensureSegMesh(seg, season, path) {
+    const sig = [seg.type, seg.cap0 || '', seg.cap1 || '', Math.round(seg.length * 100), seg.chosen || 0, season].join(':');
+    const existing = this._segMeshes.get(seg.id);
+    if (existing && existing.userData.sig === sig) return existing;
+    if (existing) {
+      this.pathG.remove(existing);
+      this._segMeshes.delete(seg.id);
+    }
     const g = new THREE.Group();
     g.userData.segId = seg.id;
+    g.userData.sig = sig;
     const mat = this._pathMatFor(season);
+    const half = PATH_W * 0.5;
+    const seam = 0.12;
     if (seg.type === 'straight') {
-      const half = PATH_W * 0.5;
-      const overlap = 0.18;
+      // Dirt slab and curbs stop at the edge of the corner square so baked
+      // (and painted) markings do not overrun the junction.
       let slabLen = Math.max(0.2, seg.length);
       let slabZ = 0;
-      if (seg.cap0 === 'corner') { slabLen += overlap; slabZ -= overlap * 0.5; }
-      if (seg.cap1 === 'corner') { slabLen += overlap; slabZ += overlap * 0.5; }
+      if (seg.cap0 === 'corner') { const cut = half - seam; slabLen -= cut; slabZ += cut * 0.5; }
+      if (seg.cap1 === 'corner') { const cut = half - seam; slabLen -= cut; slabZ -= cut * 0.5; }
+      slabLen = Math.max(0.2, slabLen);
       const slab = new THREE.Mesh(this.geo.pathSlab, mat);
       slab.scale.z = slabLen;
       slab.position.set(0, 0.02, slabZ);
@@ -1436,6 +1563,7 @@ class World {
       g.rotation.y = seg.yaw0;
     } else {
       // Sharp square corner / T tile. Curbs only on the exposed outer edges.
+      // Gameplay heading still snaps 90°; only the painted lane lines curve.
       const tileMat = mat.clone();
       tileMat.polygonOffset = true;
       tileMat.polygonOffsetFactor = -1;
@@ -1450,7 +1578,6 @@ class World {
         : typ === 'left' ? ['left', 'fwd']
         : typ === 'right' ? ['right', 'fwd']
         : ['left', 'right', 'fwd'];
-      const half = PATH_W * 0.5;
       for (const e of edges) {
         const c = new THREE.Mesh(this.geo.curb, this.curbMat);
         c.scale.z = PATH_W;
@@ -1463,9 +1590,86 @@ class World {
       g.position.set(seg.x0, 0, seg.z0);
       g.rotation.y = seg.yaw0;
     }
+    this._paintLaneMarks(g, seg, path);
     this.pathG.add(g);
     this._segMeshes.set(seg.id, g);
     return g;
+  }
+
+  _markPhaseExtra(path, beforeDist, lx) {
+    let e = 0;
+    const visit = (seg) => {
+      if (!seg) return;
+      if (seg.type !== 'left' && seg.type !== 'right' && seg.type !== 'tee') return;
+      if (seg.dist0 >= beforeDist - 1e-6) return;
+      const side = seg.chosen ? seg.chosen : (seg.type === 'left' ? -1 : seg.type === 'right' ? 1 : 0);
+      if (!side) return;
+      e += cornerArcRadius(lx, side) * Math.PI * 0.5 - PATH_W;
+    };
+    if (path) {
+      for (const seg of path.segs) visit(seg);
+      if (path.pendingCorner) visit(Object.assign({}, path.pendingCorner, { chosen: path.pendingCorner.chosen }));
+    }
+    return e;
+  }
+
+  _paintLaneMarks(g, seg, path) {
+    const pos = [], nor = [];
+    const half = PATH_W * 0.5;
+    const mid = (seg.dist0 + seg.dist1) * 0.5;
+    if (seg.type === 'straight') {
+      let d0 = seg.dist0;
+      let d1 = seg.dist1;
+      if (seg.cap0 === 'corner') d0 += half;
+      if (seg.cap1 === 'corner') d1 -= half;
+      if (d1 - d0 < 0.1) return;
+      // If this is the outgoing side of a pending/committed corner, include that corner's extra.
+      let cap0Side = 0;
+      if (seg.cap0 === 'corner') cap0Side = seg.turnDir || 0;
+      for (const lx of LANE_MARKS) {
+        let extra = this._markPhaseExtra(path, seg.dist0 - 1e-4, lx);
+        if (cap0Side) extra += cornerArcRadius(lx, cap0Side) * Math.PI * 0.5 - PATH_W;
+        const z0 = d0 - mid, z1 = d1 - mid;
+        _emitDashes(pos, nor, lx, z0, lx, z1, DASH_Y, d0 + extra);
+      }
+    } else {
+      const typ = seg.type;
+      const sides = typ === 'tee'
+        ? (seg.chosen ? [seg.chosen] : [-1, 1])
+        : typ === 'left' ? [-1]
+        : typ === 'right' ? [1]
+        : [];
+      // Pending tee (no chosen yet): paint both exits.
+      const paintSides = typ === 'tee' && !seg.chosen ? [-1, 1] : sides;
+      for (const side of paintSides) {
+        const C = cornerCenter(side);
+        for (const lx of LANE_MARKS) {
+          const extra = this._markPhaseExtra(path, seg.dist0 - 1e-4, lx);
+          const r = cornerArcRadius(lx, side);
+          const A = { x: lx, z: -half };
+          const B = cornerExitPoint(lx, side);
+          const a0 = Math.atan2(A.z - C.z, A.x - C.x);
+          const a1 = Math.atan2(B.z - C.z, B.x - C.x);
+          // Pick the sweep whose start heading matches incoming +Z.
+          let dA = a1 - a0;
+          while (dA > Math.PI) dA -= Math.PI * 2;
+          while (dA < -Math.PI) dA += Math.PI * 2;
+          const head = (da) => {
+            // dp/dθ = r(-sin θ, cos θ) for increasing θ; flip if da < 0
+            const sign = da >= 0 ? 1 : -1;
+            const hz = sign * Math.cos(a0); // z component of heading at A
+            return hz;
+          };
+          if (head(dA) < 0) {
+            // flip to the other way around
+            if (dA >= 0) dA -= Math.PI * 2; else dA += Math.PI * 2;
+          }
+          _emitArcDashes(pos, nor, C.x, C.z, r, a0, a0 + dA, DASH_Y, seg.dist0 - half + extra);
+        }
+      }
+    }
+    const mesh = finishDashMesh(pos, nor, this.dashMat);
+    if (mesh) g.add(mesh);
   }
 
   _decorateSeg(seg, season) {
@@ -1504,7 +1708,7 @@ class World {
       }
     }
     for (const seg of visuals) {
-      this._ensureSegMesh(seg, season);
+      this._ensureSegMesh(seg, season, path);
       if (seg.dist1 > playerDist - 20) this._decorateSeg(seg, season);
     }
     this._syncChevrons(path);
@@ -1910,7 +2114,7 @@ class TiltSteer {
     this.filtered = 0;
     this.neutral = 0;
     this.calibrated = false;
-    this.lastLane = 0;
+    this.armed = true;
     this._bound = false;
     this._lastEvt = 0;
   }
@@ -1935,7 +2139,7 @@ class TiltSteer {
       if (ev.gamma == null) return;
       this.hasDevice = true;
       this._lastEvt = performance.now();
-      // Portrait: gamma is left/right tilt. Tilting the phone right should move the runner right (lane +1).
+      // Portrait: gamma is left/right tilt. A right tilt (positive gamma) is a right turn.
       this.raw = ev.gamma;
       if (!this.calibrated) { this.neutral = this.raw; this.calibrated = true; }
     });
@@ -1944,28 +2148,35 @@ class TiltSteer {
     this.neutral = this.raw;
     this.calibrated = true;
     this.filtered = 0;
+    this.armed = true;
   }
   live() {
     return this.hasDevice && (performance.now() - this._lastEvt) < 1500;
   }
-  sample() {
-    if (!this.live()) return this.lastLane;
+  inject(gamma, neutral) {
+    this._listen();
+    this.hasDevice = true;
+    this._lastEvt = performance.now();
+    if (neutral != null) { this.neutral = neutral; this.calibrated = true; }
+    this.raw = gamma;
+    if (!this.calibrated) { this.neutral = 0; this.calibrated = true; }
+  }
+  angle() {
+    if (!this.live()) return this.filtered;
     const x = this.raw - this.neutral;
-    this.filtered += (x - this.filtered) * 0.22;
-    const f = this.filtered;
-    let lane = this.lastLane;
-    if (lane === 0) {
-      if (f > 14) lane = 1;
-      else if (f < -14) lane = -1;
-    } else if (lane === 1) {
-      if (f < 5) lane = 0;
-      if (f < -14) lane = -1;
-    } else {
-      if (f > -5) lane = 0;
-      if (f > 14) lane = 1;
-    }
-    this.lastLane = lane;
-    return lane;
+    this.filtered += (x - this.filtered) * 0.4;
+    if (Math.abs(this.filtered) <= TILT_TURN_OFF) this.armed = true;
+    return this.filtered;
+  }
+  // Edge-triggered: +1 right, -1 left, 0 none. Call only inside a turn window
+  // so a held tilt still fires once on entry, then needs a return to neutral.
+  pollTurn() {
+    const f = this.angle();
+    if (!this.live()) return 0;
+    if (!this.armed) return 0;
+    if (f >= TILT_TURN_ON) { this.armed = false; return 1; }
+    if (f <= -TILT_TURN_ON) { this.armed = false; return -1; }
+    return 0;
   }
 }
 
@@ -2133,25 +2344,15 @@ class Game {
         return;
       }
       if (this.state !== 'play') return;
-      const dist = Math.hypot(dx, dy);
-      const dt = Math.max(1, performance.now() - this.sw.t);
-      const flick = dist / dt > 0.4 || dt < 180;
-      const touch = (navigator.maxTouchPoints || 0) > 0 || window.matchMedia('(pointer: coarse)').matches;
-      // Vertical flicks always jump / slide.
-      if (Math.abs(dy) >= Math.abs(dx) && dist > 46) {
+      const horiz = Math.abs(dx) > Math.abs(dy);
+      // Dominant axis. A short horizontal swipe is a lane change, never a tap.
+      if (horiz && Math.abs(dx) >= 24) {
         this.sw.done = true; this._swipe(dx, dy);
         return;
       }
-      // Horizontal flicks are turns, never lanes. Touch phones never use drag-as-tilt.
-      if (Math.abs(dx) > Math.abs(dy) && dist > 46 && (touch || flick || dist > 70)) {
+      if (!horiz && Math.abs(dy) >= 40) {
         this.sw.done = true; this._swipe(dx, dy);
         return;
-      }
-      // Desktop / no-gyro only: a slow held drag stands in for tilt and must not steal swipes.
-      if (!touch && !this.tilt.live() && dt > 180 && Math.abs(dx) > 36) {
-        const lane = dx > 90 ? 1 : dx < -90 ? -1 : 0;
-        if (lane !== this.lane) this.move(lane - this.lane, true);
-        this._deskTilt = dx;
       }
     };
     const up = (x, y) => {
@@ -2167,7 +2368,11 @@ class Game {
             this._layoutHome(false);
           }
         } else if (this.state === 'play') {
-          if (Math.hypot(dx, dy) > 30) this._swipe(dx, dy); else this._tap();
+          const dist = Math.hypot(dx, dy);
+          const horiz = Math.abs(dx) > Math.abs(dy);
+          if (horiz && Math.abs(dx) >= 24) this._swipe(dx, dy);
+          else if (!horiz && Math.abs(dy) >= 40) this._swipe(dx, dy);
+          else if (dist < 24) this._tap();
         }
       } else if (this.state === 'home') {
         this.homeOff = 0;
@@ -2205,10 +2410,10 @@ class Game {
         return;
       }
       if (this.state !== 'play') return;
-      if (k === 'ArrowLeft' || k === 'KeyA') this.move(-1);
-      else if (k === 'ArrowRight' || k === 'KeyD') this.move(1);
-      else if (k === 'KeyQ' || k === 'Comma') this.turn(-1);
-      else if (k === 'KeyE' || k === 'Period') this.turn(1);
+      if (k === 'ArrowLeft') this.move(-1);
+      else if (k === 'ArrowRight') this.move(1);
+      else if (k === 'KeyA' || k === 'KeyQ' || k === 'Comma') this.turn(-1);
+      else if (k === 'KeyD' || k === 'KeyE' || k === 'Period') this.turn(1);
       else if (k === 'ArrowUp' || k === 'KeyW') this.jump();
       else if (k === 'ArrowDown' || k === 'KeyS') this.slide();
       else if (k === 'Space' || k === 'ShiftLeft' || k === 'ShiftRight') this.togglePhase();
@@ -2219,7 +2424,7 @@ class Game {
   _swipe(dx, dy) {
     this.lastInput = { type: 'swipe', dx, dy, state: this.state };
     if (this.state !== 'play') return;
-    if (Math.abs(dx) > Math.abs(dy)) this.turn(dx > 0 ? 1 : -1);
+    if (Math.abs(dx) > Math.abs(dy)) this.move(dx > 0 ? 1 : -1);
     else if (dy < 0) this.jump(); else this.slide();
   }
   _tap() {
@@ -2261,7 +2466,9 @@ class Game {
   }
 
   _turnWindow(speed) {
-    return { before: Math.max(2.8, 0.38 * speed), after: Math.max(1.05, 0.14 * speed) };
+    // Slightly wider than the old swipe window so a tilt has time to register,
+    // still scaling with speed so the time window stays about half a second.
+    return { before: Math.max(3.6, 0.48 * speed), after: Math.max(1.35, 0.18 * speed) };
   }
   _tryConsumeTurn() {
     const p = this.path.pending;
@@ -2355,7 +2562,7 @@ class Game {
       this._hideCount();
       this.state = 'play';
       this.tilt.calibrate();
-      this.toast('Tap to shift  ·  Tilt to move  ·  Swipe to turn', 2.2);
+      this.toast('Swipe to move  ·  Tilt to turn  ·  Tap to shift', 2.2);
       return;
     }
     if (idx !== this._countShown) {
@@ -2519,11 +2726,17 @@ class Game {
     this.world._applyPhaseWash(BLOOM, true);
     this._formUI();
     this._hud();
-    this.tilt.lastLane = 0;
+    this.camX = 0;
+    this.camYaw = 0;
+    this.camTilt = 0;
+    if (this.penguin && this.penguin.hop) this.penguin.hop.rotation.set(0, 0, 0);
+    this.penguin.root.visible = true;
+    this._tiltHintShown = false;
+    this.frozen = false;
     this.tilt.calibrate();
     if (skipCount) {
       this.state = 'play';
-      this.toast('Tap to shift  ·  Tilt to move  ·  Swipe to turn', 2.2);
+      this.toast('Swipe to move  ·  Tilt to turn  ·  Tap to shift', 2.2);
     } else {
       this.state = 'countdown';
       this.countT = 3.2;
@@ -2560,6 +2773,38 @@ class Game {
     this.toastT = dur;
   }
 
+  _tickTiltTurn() {
+    const pend = this.path.pending;
+    this.tilt.angle(); // keep the filter and hysteresis up to date
+    if (this.offPath || !pend || pend.committed) return;
+    const w = this._turnWindow(this.speed);
+    const inWindow = this.pz >= pend.dist - w.before && this.pz <= pend.dist + w.after;
+    if (inWindow && this.tilt.live()) {
+      const dir = this.tilt.pollTurn();
+      if (dir) this.turn(dir);
+    }
+    if (!this._tiltHintShown && this.pz >= pend.dist - Math.max(w.before, 10) && this.pz <= pend.dist + w.after) {
+      this.toast('Tilt to turn', 1.8);
+      this._tiltHintShown = true;
+    }
+  }
+  _cornerSafeDist() {
+    return Math.max(PATH_W * 0.5 + 2, CORNER_SAFE_SEC * this.speed);
+  }
+  _inCornerSafe(z) {
+    const marginIn = PATH_W * 0.5 + 0.4;
+    const after = this._cornerSafeDist();
+    const hit = (d) => z >= d - marginIn && z <= d + after;
+    if (this.path.pending && hit(this.path.pending.dist)) return true;
+    if (this.path.pendingCorner && hit(this.path.pendingCorner.dist0)) return true;
+    for (const seg of this.path.segs) {
+      if (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') {
+        if (hit(seg.dist0)) return true;
+      }
+    }
+    return false;
+  }
+
   _ensureSpawn() {
     const limit = this.path.officialEndDist() - 1.5;
     while (this.spawnZ < this.pz + SPAWN_AHEAD && this.spawnZ < limit) {
@@ -2572,6 +2817,10 @@ class Game {
     const t = this.elapsed;
     const r = Math.random();
     const lanes = [-1, 0, 1];
+    if (this._inCornerSafe(z)) {
+      this._addCoinLine(lanes[irand(3)], z, 4);
+      return;
+    }
     const gateChance = t < 5 ? 0 : Math.min(0.12 + t * 0.0055, 0.36);
     const minGate = t < 8 ? 5 : (t < 25 ? 4 : 3);
     if (r < gateChance && this.rowCount - this.lastGate >= minGate) {
@@ -2751,7 +3000,9 @@ class Game {
 
     if (counting) this._tickCountdown(dt);
 
-    if (playing) {
+    if (playing && this.frozen) {
+      this.speed = 0;
+    } else if (playing) {
       this.elapsed += dt;
       this.speed = this._calcSpeed();
       this.prevPz = this.pz;
@@ -2780,10 +3031,7 @@ class Game {
         this.fovKick = Math.max(this.fovKick, 8);
         this.shake = Math.max(this.shake, 0.22);
       }
-      if (this.tilt.live()) {
-        const tl = this.tilt.sample();
-        if (tl !== this.lane) this.move(tl - this.lane, true);
-      }
+      this._tickTiltTurn();
     } else if (home) {
       this.speed = 10.5;
       this.pz += this.speed * dt;
@@ -2853,7 +3101,7 @@ class Game {
     this.penguin.root.rotation.y = this.yaw;
     this.penguin.animate(dt, {
       moving: playing || home || counting,
-      idleRun: home || counting,
+      idleRun: counting,
       speed: this.speed,
       jumpY: Math.max(0, this.jumpY),
       sliding: this.slideT > 0 && this.jumpY <= 0.02,
@@ -2863,10 +3111,12 @@ class Game {
       falling: dying || this.state === 'over' || (this.offPath && this.jumpY < 0.1),
       fallT: this.deadT,
       onGround: this.jumpY <= 0.02,
-      homeThreeQ: home,
+      homeThreeQ: false,
       time: this.elapsed || this.world.time
     });
-    if (this.invuln > 0 && playing) this.penguin.root.visible = (Math.sin(this.invuln * 30) > 0);
+    const hidePanda = home || this.state === 'over';
+    if (hidePanda) this.penguin.root.visible = false;
+    else if (this.invuln > 0 && playing) this.penguin.root.visible = (Math.sin(this.invuln * 30) > 0);
     else this.penguin.root.visible = true;
     this._tickSteps(playing);
 
@@ -2972,7 +3222,7 @@ class Game {
     const home = this.state === 'home' || this.state === 'shop';
     const speedK = clamp((this.speed - 10.5) / 16, 0, 1);
     this.camTilt += (-this.lean * 0.09 - this.camTilt) * Math.min(1, 8 * dt);
-    const bob = (this.jumpY <= 0.02 && (playing || home))
+    const bob = (!home && this.jumpY <= 0.02 && playing)
       ? Math.sin(this.penguin.runT * Math.PI * 2) * 0.045 : 0;
     this.shake = Math.max(0, this.shake - dt * 2.2);
     const shx = this.shake ? (hash(this.elapsed, 1) - 0.5) * this.shake * 0.35 : 0;
@@ -2984,7 +3234,8 @@ class Game {
     const v = yawVec(this.camYaw);
     let dist, height, lookAhead, lookY, fov;
     if (home) {
-      dist = 4.4; height = 1.7; lookAhead = 0.55; lookY = 0.62; fov = 46;
+      // Scenic chase view down the empty season path. The panda is hidden here.
+      dist = 7.2; height = 3.6; lookAhead = 18; lookY = 0.7; fov = 54;
     } else {
       dist = 5.8 - speedK * 0.45;
       height = 2.25 + speedK * 0.15;
@@ -2992,7 +3243,7 @@ class Game {
       lookY = 0.45 + Math.max(0, this.jumpY) * 0.2;
       fov = 52 + speedK * 8 + this.fovKick;
     }
-    const side = home ? 1.85 : 0;
+    const side = 0;
     // Camera tracks a lagged lane offset so the runner visibly moves into a lane (screen-right is +lane).
     const camLat = this.camX;
     const lookLat = this.camX * 0.2 + this.px * 0.8;
@@ -3077,6 +3328,11 @@ class Game {
       forceTurn: (type, atDist) => self.path.forceTurn(type, atDist),
       pendingTurn: () => self.path.pending && { type: self.path.pending.type, dist: self.path.pending.dist, committed: self.path.pending.committed },
       setInvincible(v) { self.ignoreHit = !!v; },
+      injectTilt(gamma, neutral) { self.tilt.inject(gamma, neutral == null ? 0 : neutral); },
+      tiltAngle() { return self.tilt.angle(); },
+      tiltArmed() { return self.tilt.armed; },
+      inCornerSafe: z => self._inCornerSafe(z),
+      cornerSafeDist: () => self._cornerSafeDist(),
       objects() {
         return {
           gates: self.pools.gates.filter(o => o.live).map(o => ({ type: o.type, z: o.z, phase: o.phase, span: o.span, lane: o.lane, visible: o.mesh.visible })),
