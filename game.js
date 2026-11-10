@@ -1,8 +1,9 @@
-// Season Shift v3.1 — SEASON_SHIFT_V3_1_1
+// Season Shift v3.2 — SEASON_SHIFT_V3_2
 // An original 3D endless runner for Joseph. Pip the hoodie penguin, Ember & Frost.
 import * as THREE from './lib/three.module.min.js';
+import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V3_1_1';
+const VERSION = 'SEASON_SHIFT_V3_2';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 const EMBER = 0, FROST = 1;
@@ -434,26 +435,97 @@ function makeOceanMat() {
 
 // ---------------- penguin ----------------
 class Penguin {
-  constructor(geo) {
-    this.geo = geo;
+  constructor() {
     this.root = new THREE.Group();
     this.hop = new THREE.Group();
-    this.bodyG = new THREE.Group();
+    this.model = new THREE.Group();
     this.root.add(this.hop);
-    this.hop.add(this.bodyG);
+    this.hop.add(this.model);
 
-    this.mHoodie = std(0xff5a46, { roughness: 0.62 });
-    this.mTrim = std(0xd44232, { roughness: 0.62 });
-    this.mFur = std(0x1a2230, { roughness: 0.7 });
-    this.mBelly = std(0xf6efe3, { roughness: 0.72 });
-    this.mBeak = std(0xff9f43, { roughness: 0.38 });
-    this.mFoot = std(0xff7a1a, { roughness: 0.42 });
-    this.mEye = std(0xffffff, { roughness: 0.3 });
-    this.mPupil = std(0x16161c, { roughness: 0.3 });
-    this.mBlush = std(0xff8a9a, { roughness: 0.8 });
-    this.mString = std(0xf2e6d0, { roughness: 0.65 });
-    this.mHoodIn = std(0xffe8dc, { roughness: 0.7, side: THREE.BackSide });
-    this.mPatch = std(0xff6a21, { roughness: 0.5, emissive: 0xff6a21, emissiveIntensity: 0.25 });
+    this.phase = EMBER;
+    this.costume = 'classic';
+    this.runT = 0;
+    this.burst = [];
+    this.hoodieMats = [];
+    this.trimMats = [];
+    this.patchMats = [];
+    this.bones = {};
+    this.mixer = null;
+    this.actions = {};
+    this.currentClip = null;
+    this.ready = false;
+
+    this.blob = new THREE.Mesh(
+      new THREE.CircleGeometry(0.45, 20),
+      std(0x000000, { transparent: true, opacity: 0.38, depthWrite: false })
+    );
+    this.blob.rotation.x = -Math.PI / 2;
+    this.blob.position.y = 0.025;
+    this.blob.castShadow = false;
+    this.root.add(this.blob);
+  }
+
+  async load() {
+    const loader = new GLTFLoader();
+    const gltf = await loader.loadAsync('./assets/models/pip.glb');
+    this.mount(gltf);
+  }
+
+  mount(gltf) {
+    const scene = gltf.scene;
+    this.model.add(scene);
+    this.gltf = gltf;
+
+    scene.traverse(o => {
+      if (o.isBone) this.bones[o.name] = o;
+      if (!o.isMesh) return;
+      o.castShadow = true;
+      o.receiveShadow = true;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      mats.forEach(m => {
+        if (!m) return;
+        // slightly toon-friendly standard look; keep existing colors
+        m.roughness = m.roughness != null ? Math.min(0.85, m.roughness + 0.08) : 0.6;
+        m.metalness = 0;
+        const n = (m.name || '').toLowerCase();
+        if (n === 'hoodie') this.hoodieMats.push(m);
+        else if (n === 'hoodietrim' || n === 'hoodiestring') this.trimMats.push(m);
+        else if (n === 'hoodiepatch') this.patchMats.push(m);
+      });
+    });
+
+    this.mixer = new THREE.AnimationMixer(scene);
+    this.actions = {};
+    for (const clip of gltf.animations || []) {
+      const act = this.mixer.clipAction(clip);
+      act.enabled = true;
+      if (clip.name === 'Jump' || clip.name === 'Slide') {
+        act.setLoop(THREE.LoopRepeat, Infinity);
+      } else {
+        act.setLoop(THREE.LoopRepeat, Infinity);
+      }
+      this.actions[clip.name] = act;
+    }
+    this._buildAccessories();
+    this.ready = true;
+    this.setCostume(this.costume || 'classic');
+    this.setForm(this.phase, true);
+    this._play('Idle', 0);
+  }
+
+  _buildAccessories() {
+    const head = this.bones.Head || this.model;
+    const body = this.bones.Body || this.model;
+    const mk = (mat, geo, parent, pos, rot, scl) => {
+      const m = new THREE.Mesh(geo, mat);
+      if (pos) m.position.set(pos[0], pos[1], pos[2]);
+      if (rot) m.rotation.set(rot[0], rot[1], rot[2]);
+      if (scl) m.scale.set(scl[0], scl[1], scl[2]);
+      m.castShadow = true;
+      parent.add(m);
+      return m;
+    };
+    // accessories are in the model's local (Y-up, roughly metres*1.7)
     this.mBeanie = std(0xe85d5d, { roughness: 0.75 });
     this.mBeaniePom = std(0xf7f1e8, { roughness: 0.8 });
     this.mScarf = std(0xd94a3a, { roughness: 0.7 });
@@ -465,137 +537,38 @@ class Penguin {
     this.mFurTrim = std(0xf4efe6, { roughness: 0.85 });
     this.mNinja = std(0x111118, { roughness: 0.65 });
 
-    this._build();
-    this.phase = EMBER;
-    this.costume = 'classic';
-    this.runT = 0;
-    this.burst = [];
-    this.setCostume('classic');
-    this.setForm(EMBER, true);
-  }
+    this.accBeanie = new THREE.Group(); head.add(this.accBeanie);
+    this.accBeanie.position.set(0, 0.16, 0);
+    mk(this.mBeanie, new THREE.SphereGeometry(0.11, 16, 12), this.accBeanie, [0, 0.02, 0], null, [1, 0.55, 1]);
+    mk(this.mBeanie, new THREE.CylinderGeometry(0.105, 0.11, 0.04, 14), this.accBeanie, [0, -0.03, 0]);
+    mk(this.mBeaniePom, new THREE.SphereGeometry(0.035, 10, 8), this.accBeanie, [0, 0.08, -0.02]);
 
-  _mesh(geo, mat, parent, x = 0, y = 0, z = 0, sx, sy, sz) {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    if (sx != null) m.scale.set(sx, sy == null ? sx : sy, sz == null ? sx : sz);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    parent.add(m);
-    return m;
-  }
+    this.accScarf = new THREE.Group(); body.add(this.accScarf);
+    this.accScarf.position.set(0, 0.22, 0);
+    mk(this.mScarf, new THREE.TorusGeometry(0.12, 0.025, 8, 16), this.accScarf, [0, 0, 0], [Math.PI / 2, 0, 0]);
+    this.scarfT1 = mk(this.mScarf, new THREE.BoxGeometry(0.05, 0.22, 0.02), this.accScarf, [-0.05, -0.1, -0.1]);
+    this.scarfT2 = mk(this.mScarf2, new THREE.BoxGeometry(0.05, 0.26, 0.02), this.accScarf, [0.06, -0.12, -0.08]);
 
-  _build() {
-    const g = this.geo;
-    // Short legs, big slappy orange feet
-    this.legL = new THREE.Group(); this.legR = new THREE.Group();
-    this.legL.position.set(-0.11, 0.26, 0);
-    this.legR.position.set(0.11, 0.26, 0);
-    this.bodyG.add(this.legL, this.legR);
-    this._mesh(g.capLeg, this.mFur, this.legL, 0, -0.08, 0);
-    this._mesh(g.capLeg, this.mFur, this.legR, 0, -0.08, 0);
-    this.footL = new THREE.Group(); this.footR = new THREE.Group();
-    this.footL.position.set(0, -0.20, 0.05);
-    this.footR.position.set(0, -0.20, 0.05);
-    this.legL.add(this.footL); this.legR.add(this.footR);
-    this._mesh(g.foot, this.mFoot, this.footL, 0, 0, 0.08, 1.45, 0.42, 2.15);
-    this._mesh(g.foot, this.mFoot, this.footR, 0, 0, 0.08, 1.45, 0.42, 2.15);
-    for (const foot of [this.footL, this.footR]) {
-      for (const ox of [-0.08, 0, 0.08]) this._mesh(g.foot, this.mFoot, foot, ox, 0.01, 0.2, 0.42, 0.28, 0.6);
-    }
+    this.accGlasses = new THREE.Group(); head.add(this.accGlasses);
+    this.accGlasses.position.set(0, 0.06, 0.11);
+    mk(this.mGlass, new THREE.BoxGeometry(0.055, 0.032, 0.015), this.accGlasses, [-0.04, 0, 0]);
+    mk(this.mGlass, new THREE.BoxGeometry(0.055, 0.032, 0.015), this.accGlasses, [0.04, 0, 0]);
+    mk(this.mGlassArm, new THREE.BoxGeometry(0.03, 0.012, 0.012), this.accGlasses, [0, 0, 0]);
 
-    // Compact torso: BLACK back, WHITE belly, short hoodie on top
-    this.torso = new THREE.Group();
-    this.torso.position.y = 0.52;
-    this.bodyG.add(this.torso);
-    this.body = this._mesh(g.capBody, this.mFur, this.torso, 0, -0.02, 0, 1, 1, 0.95);
-    // white belly wrapping the front and sides
-    this.belly = this._mesh(g.sphere, this.mBelly, this.torso, 0, -0.04, 0.14, 0.22, 0.26, 0.16);
-    // short hoodie garment (doesn't swallow the head)
-    this.hoodie = this._mesh(g.capBody, this.mHoodie, this.torso, 0, -0.05, 0.03, 1.16, 0.84, 1.12);
-    this.hem = this._mesh(g.cyl, this.mTrim, this.torso, 0, -0.24, 0, 0.30, 0.07, 0.30);
-    this._mesh(g.cyl, this.mTrim, this.torso, 0, 0.16, 0, 0.24, 0.06, 0.24); // collar
-    this.patch = this._mesh(g.sphere, this.mPatch, this.torso, 0, 0.02, -0.26, 0.07, 0.08, 0.04);
-    // small tail under the hem
-    this.tail = this._mesh(g.sphere, this.mFur, this.torso, 0, -0.26, -0.24, 0.07, 0.055, 0.09);
+    this.accPhones = new THREE.Group(); head.add(this.accPhones);
+    mk(this.mPhones, new THREE.CylinderGeometry(0.045, 0.045, 0.03, 12), this.accPhones, [-0.11, 0.04, 0], [0, 0, Math.PI / 2]);
+    mk(this.mPhones, new THREE.CylinderGeometry(0.045, 0.045, 0.03, 12), this.accPhones, [0.11, 0.04, 0], [0, 0, Math.PI / 2]);
+    mk(this.mPhonesAcc, new THREE.CylinderGeometry(0.025, 0.025, 0.016, 10), this.accPhones, [-0.125, 0.04, 0], [0, 0, Math.PI / 2]);
+    mk(this.mPhonesAcc, new THREE.CylinderGeometry(0.025, 0.025, 0.016, 10), this.accPhones, [0.125, 0.04, 0], [0, 0, Math.PI / 2]);
 
-    // Arms: colored sleeves + BLACK flippers that clearly poke out
-    this.armL = new THREE.Group(); this.armR = new THREE.Group();
-    this.armL.position.set(-0.28, 0.08, 0);
-    this.armR.position.set(0.28, 0.08, 0);
-    this.torso.add(this.armL, this.armR);
-    this._mesh(g.flipper, this.mHoodie, this.armL, -0.03, -0.12, 0, 1.05, 0.7, 1.05);
-    this._mesh(g.flipper, this.mHoodie, this.armR, 0.03, -0.12, 0, 1.05, 0.7, 1.05);
-    this._mesh(g.flipper, this.mFur, this.armL, -0.03, -0.30, 0.02, 0.9, 0.85, 1.15);
-    this._mesh(g.flipper, this.mFur, this.armR, 0.03, -0.30, 0.02, 0.9, 0.85, 1.15);
+    this.accParka = new THREE.Group(); head.add(this.accParka);
+    mk(this.mFurTrim, new THREE.TorusGeometry(0.1, 0.03, 8, 16), this.accParka, [0, 0.02, 0.02], [Math.PI / 2.4, 0, 0]);
 
-    // BIG black head sitting above the hoodie
-    this.headG = new THREE.Group();
-    this.headG.position.set(0, 0.42, 0.06);
-    this.torso.add(this.headG);
-    this.head = this._mesh(g.capHead, this.mFur, this.headG, 0, 0.02, 0);
-    // white eye patches (classic penguin face) + big eyes slightly to the sides
-    this._mesh(g.sphere, this.mBelly, this.headG, -0.14, 0.06, 0.18, 0.12, 0.13, 0.1);
-    this._mesh(g.sphere, this.mBelly, this.headG, 0.14, 0.06, 0.18, 0.12, 0.13, 0.1);
-    this._mesh(g.sphere, this.mBlush, this.headG, -0.18, -0.04, 0.16, 0.07, 0.05, 0.05);
-    this._mesh(g.sphere, this.mBlush, this.headG, 0.18, -0.04, 0.16, 0.07, 0.05, 0.05);
-    const eyeL = this._mesh(g.sphere, this.mEye, this.headG, -0.13, 0.07, 0.22, 0.09, 0.1, 0.08);
-    const eyeR = this._mesh(g.sphere, this.mEye, this.headG, 0.13, 0.07, 0.22, 0.09, 0.1, 0.08);
-    this._mesh(g.sphere, this.mPupil, eyeL, 0.05, 0, 0.55, 0.5, 0.55, 0.4);
-    this._mesh(g.sphere, this.mPupil, eyeR, -0.05, 0, 0.55, 0.5, 0.55, 0.4);
-    const beak = this._mesh(g.beak, this.mBeak, this.headG, 0, -0.04, 0.30, 1.15, 1.1, 1.15);
-    beak.rotation.x = Math.PI / 2.05;
+    this.accNinja = new THREE.Group(); head.add(this.accNinja);
+    mk(this.mNinja, new THREE.CylinderGeometry(0.1, 0.1, 0.05, 14), this.accNinja, [0, 0.05, 0.02]);
 
-    // OPEN hood: a cowl behind and around the head, face and most of the
-    // black head stay visible from behind and 3/4
-    this.hood = new THREE.Group();
-    this.headG.add(this.hood);
-    // cowl pulled back so the black head, eyes and beak stay in the open
-    const hoodM = this._mesh(g.hood, this.mHoodie, this.hood, 0, 0.12, -0.12, 1.06, 0.95, 1.0);
-    hoodM.rotation.x = 0.72;
-    const hoodIn = this._mesh(g.hood, this.mHoodIn, this.hood, 0, 0.12, -0.12, 0.94, 0.86, 0.9);
-    hoodIn.rotation.x = 0.72;
-    hoodIn.castShadow = false;
-    this.stringL = this._mesh(g.cyl, this.mString, this.hood, -0.12, -0.18, 0.10, 0.012, 0.28, 0.012);
-    this.stringR = this._mesh(g.cyl, this.mString, this.hood, 0.12, -0.18, 0.10, 0.012, 0.28, 0.012);
-    this._mesh(g.sphere, this.mTrim, this.stringL, 0, -0.55, 0, 1.8, 0.2, 1.8);
-    this._mesh(g.sphere, this.mTrim, this.stringR, 0, -0.55, 0, 1.8, 0.2, 1.8);
-
-    // accessories (kept, retuned to the bigger head)
-    this.accBeanie = new THREE.Group(); this.headG.add(this.accBeanie);
-    this._mesh(g.sphere, this.mBeanie, this.accBeanie, 0, 0.2, 0, 1.05, 0.55, 1.05);
-    this._mesh(g.cyl, this.mBeanie, this.accBeanie, 0, 0.08, 0, 0.29, 0.1, 0.29);
-    this._mesh(g.sphere, this.mBeaniePom, this.accBeanie, 0, 0.38, -0.02, 0.1, 0.1, 0.1);
-
-    this.accScarf = new THREE.Group(); this.torso.add(this.accScarf);
-    this._mesh(g.cyl, this.mScarf, this.accScarf, 0, 0.24, 0.04, 0.22, 0.08, 0.22);
-    this.scarfT1 = this._mesh(g.box, this.mScarf, this.accScarf, -0.08, 0.02, -0.22, 0.1, 0.42, 0.05);
-    this.scarfT2 = this._mesh(g.box, this.mScarf2, this.accScarf, 0.1, -0.04, -0.2, 0.1, 0.5, 0.05);
-
-    this.accGlasses = new THREE.Group(); this.headG.add(this.accGlasses);
-    this._mesh(g.box, this.mGlass, this.accGlasses, -0.13, 0.07, 0.26, 0.14, 0.08, 0.04);
-    this._mesh(g.box, this.mGlass, this.accGlasses, 0.13, 0.07, 0.26, 0.14, 0.08, 0.04);
-    this._mesh(g.box, this.mGlassArm, this.accGlasses, 0, 0.07, 0.26, 0.08, 0.03, 0.03);
-    this._mesh(g.box, this.mGlassArm, this.accGlasses, -0.22, 0.07, 0.1, 0.03, 0.025, 0.22);
-    this._mesh(g.box, this.mGlassArm, this.accGlasses, 0.22, 0.07, 0.1, 0.03, 0.025, 0.22);
-
-    this.accPhones = new THREE.Group(); this.headG.add(this.accPhones);
-    this._mesh(g.sphere, this.mPhones, this.accPhones, 0, 0.2, 0, 1.12, 0.5, 1.05);
-    this._mesh(g.cyl, this.mPhones, this.accPhones, -0.30, 0.04, 0.02, 0.1, 0.08, 0.1).rotation.z = Math.PI / 2;
-    this._mesh(g.cyl, this.mPhones, this.accPhones, 0.30, 0.04, 0.02, 0.1, 0.08, 0.1).rotation.z = Math.PI / 2;
-    this._mesh(g.cyl, this.mPhonesAcc, this.accPhones, -0.32, 0.04, 0.02, 0.07, 0.04, 0.07).rotation.z = Math.PI / 2;
-    this._mesh(g.cyl, this.mPhonesAcc, this.accPhones, 0.32, 0.04, 0.02, 0.07, 0.04, 0.07).rotation.z = Math.PI / 2;
-
-    this.accParka = new THREE.Group(); this.headG.add(this.accParka);
-    this._mesh(g.sphere, this.mFurTrim, this.accParka, 0, 0.02, -0.1, 0.36, 0.28, 0.32);
-
-    this.accNinja = new THREE.Group(); this.headG.add(this.accNinja);
-    this._mesh(g.cyl, this.mNinja, this.accNinja, 0, 0.08, 0.04, 0.29, 0.12, 0.29);
-    this.ninjaKnot = this._mesh(g.sphere, this.mNinja, this.accNinja, 0, 0.1, -0.28, 0.08, 0.07, 0.08);
-    this._mesh(g.box, this.mNinja, this.accNinja, -0.06, 0.04, -0.34, 0.06, 0.16, 0.03);
-    this._mesh(g.box, this.mNinja, this.accNinja, 0.06, 0.0, -0.34, 0.06, 0.18, 0.03);
-
-    this.accRain = new THREE.Group(); this.torso.add(this.accRain);
-    this._mesh(g.box, this.mTrim, this.accRain, 0, 0.0, 0.26, 0.07, 0.3, 0.04);
+    this.accRain = new THREE.Group(); body.add(this.accRain);
+    mk(std(0xe0b000, { roughness: 0.5 }), new THREE.BoxGeometry(0.04, 0.16, 0.02), this.accRain, [0, 0.08, 0.16]);
 
     this.accessories = {
       none: [],
@@ -607,10 +580,21 @@ class Penguin {
       parka: [this.accParka],
       ninja: [this.accNinja]
     };
+    Object.values(this.accessories).forEach(arr => arr.forEach(g => { g.visible = false; }));
+  }
 
-    this.blob = this._mesh(new THREE.CircleGeometry(0.5, 20), std(0x000000, { transparent: true, opacity: 0.38, depthWrite: false }), this.root, 0, 0.025, 0.05);
-    this.blob.rotation.x = -Math.PI / 2;
-    this.blob.castShadow = false;
+  _play(name, fade = 0.15) {
+    if (!this.actions[name] || this.currentClip === name) return;
+    const next = this.actions[name];
+    const prev = this.currentClip && this.actions[this.currentClip];
+    next.reset();
+    next.play();
+    if (prev && fade > 0) {
+      prev.crossFadeTo(next, fade, false);
+    } else if (prev) {
+      prev.stop();
+    }
+    this.currentClip = name;
   }
 
   setCostume(id) {
@@ -618,35 +602,42 @@ class Penguin {
     this.costume = c.id;
     this.baseHoodie = c.hoodie;
     this.baseTrim = c.trim;
-    this.mHoodie.color.setHex(c.hoodie);
-    this.mTrim.color.setHex(c.trim);
-    const hoodUp = c.acc === 'none' || c.acc === 'raincoat' || c.acc === 'parka' || c.acc === 'scarf' || c.acc === 'glasses';
-    this.hood.visible = hoodUp && c.acc !== 'ninja' && c.acc !== 'beanie' && c.acc !== 'phones';
-    // scarf can have hood down so tails read better? keep hood up for classic look, scarf still visible
-    if (c.acc === 'scarf') this.hood.visible = false;
-    Object.keys(this.accessories).forEach(k => {
-      this.accessories[k].forEach(g => { g.visible = (k === c.acc); });
-    });
+    this._tint(this.hoodieMats, c.hoodie, 0);
+    this._tint(this.trimMats, c.trim, 0);
+    if (this.accessories) {
+      Object.keys(this.accessories).forEach(k => {
+        this.accessories[k].forEach(g => { g.visible = (k === c.acc); });
+      });
+    }
     this.setForm(this.phase, true);
+  }
+
+  _tint(list, hex, emissiveHex) {
+    list.forEach(m => {
+      m.color.setHex(hex);
+      if (emissiveHex) {
+        m.emissive.setHex(emissiveHex);
+        m.emissiveIntensity = 0.22;
+      } else {
+        m.emissive.setHex(0x000000);
+        m.emissiveIntensity = 0;
+      }
+    });
   }
 
   setForm(phase, instant = false) {
     this.phase = phase;
     const formC = PHASE_COL[phase];
     const c = COSTUMES.find(x => x.id === this.costume) || COSTUMES[0];
-    if (c.id === 'classic') {
-      this.mHoodie.color.setHex(phase === EMBER ? 0xff5a46 : 0x5ec3ff);
-      this.mTrim.color.setHex(phase === EMBER ? 0xd44232 : 0x3a8ec8);
-    } else {
-      this.mHoodie.color.setHex(c.hoodie);
-      this.mTrim.color.setHex(c.trim);
-    }
-    this.mHoodie.emissive.setHex(formC);
-    this.mHoodie.emissiveIntensity = 0.22;
-    this.mPatch.color.setHex(formC);
-    this.mPatch.emissive.setHex(formC);
-    this.mPatch.emissiveIntensity = 0.55;
-    this.stringL.material = this.mString;
+    const hoodie = c.id === 'classic' ? (phase === EMBER ? 0xff5a46 : 0x5ec3ff) : c.hoodie;
+    const trim = c.id === 'classic' ? (phase === EMBER ? 0xd44232 : 0x3a8ec8) : c.trim;
+    this._tint(this.hoodieMats, hoodie, formC);
+    this._tint(this.trimMats, trim, 0);
+    this.patchMats.forEach(m => {
+      m.color.setHex(formC);
+      m.emissive.setHex(formC);
+      m.emissiveIntensity = 0.5;
+    });
     if (!instant) this._burst();
   }
 
@@ -662,84 +653,52 @@ class Penguin {
   }
 
   animate(dt, ev) {
-    // ev: { moving, speed, jumpY, sliding, lean, falling, fallT, onGround }
     const spd = ev.moving ? ev.speed : (ev.idleRun ? 8 : 0);
     const freq = ev.sliding ? 0 : (0.9 + spd * 0.055);
     if (ev.moving || ev.idleRun) this.runT += dt * freq;
-    const t = this.runT * Math.PI * 2;
-    const onG = ev.onGround && !ev.sliding && !ev.falling;
 
-    let legA = Math.sin(t) * (onG ? 0.85 : 0);
-    let legB = -legA;
-    let armA = Math.sin(t + Math.PI) * (onG ? 0.55 : 0.15);
-    let armB = -armA;
-    let bob = onG ? Math.abs(Math.sin(t)) * 0.06 : 0;
-    let waddle = onG ? Math.sin(t) * 0.1 : 0;
-    let squash = onG ? 1 - Math.abs(Math.cos(t)) * 0.045 : 1;
+    if (this.mixer && this.ready) {
+      let clip = 'Idle';
+      if (ev.falling) clip = 'Jump';
+      else if (ev.sliding) clip = 'Slide';
+      else if (ev.jumpY > 0.02) clip = 'Jump';
+      else if (ev.moving || ev.idleRun) clip = 'Run';
+      this._play(clip, ev.sliding || ev.jumpY > 0.02 ? 0.08 : 0.16);
+      if (this.actions.Run) {
+        this.actions.Run.timeScale = ev.idleRun ? 0.85 : (0.75 + spd * 0.055);
+      }
+      this.mixer.update(dt);
+    }
 
-    if (ev.jumpY > 0.02 && !ev.falling) {
-      const up = clamp(ev.jumpY / 1.4, 0, 1);
-      legA = -0.55 - up * 0.2; legB = -0.55 - up * 0.15;
-      armA = 0.7; armB = 0.7;
-      squash = 1 + up * 0.08;
-      bob = ev.jumpY;
-    }
-    if (ev.sliding) {
-      this.bodyG.rotation.x = lerp(this.bodyG.rotation.x, 1.15, clamp(14 * dt, 0, 1));
-      this.bodyG.position.y = lerp(this.bodyG.position.y, -0.22, clamp(14 * dt, 0, 1));
-      legA = 0.9; legB = 0.35;
-      armA = 1.1; armB = 0.9;
-      squash = 0.92;
-      bob = 0;
-      waddle = 0;
-    } else {
-      this.bodyG.rotation.x = lerp(this.bodyG.rotation.x, ev.falling ? 0.9 : 0.08, clamp(10 * dt, 0, 1));
-      this.bodyG.position.y = lerp(this.bodyG.position.y, 0, clamp(12 * dt, 0, 1));
-    }
+    // hop root for jump height / lean / home 3/4 turn
     if (ev.falling) {
       const f = ev.fallT || 0;
-      this.bodyG.rotation.x = 0.4 + f * 1.6;
-      this.bodyG.rotation.z = Math.sin(f * 14) * 0.25;
-      this.hop.position.y = Math.max(0, 0.4 - f * 1.2);
-      squash = 1;
+      this.hop.position.y = Math.max(0, ev.jumpY + Math.max(0, 0.4 - f * 1.2));
+      this.hop.rotation.x = Math.min(0.9, f * 1.4);
     } else {
-      this.bodyG.rotation.z = 0;
-      this.hop.position.y = ev.jumpY;
+      this.hop.position.y = ev.jumpY || 0;
+      this.hop.rotation.x = 0;
     }
-
-    this.legL.rotation.x = legA;
-    this.legR.rotation.x = legB;
-    // slap: plant the foot flat and a little extra when it hits the ground
-    const slapL = onG ? Math.max(0, -Math.sin(t)) * 0.35 : 0;
-    const slapR = onG ? Math.max(0, Math.sin(t)) * 0.35 : 0;
-    this.footL.rotation.x = -legA * 0.5 + 0.18 + slapL;
-    this.footR.rotation.x = -legB * 0.5 + 0.18 + slapR;
-    this.armL.rotation.x = armA;
-    this.armR.rotation.x = armB;
-    this.armL.rotation.z = 0.35;
-    this.armR.rotation.z = -0.35;
-
     const lean = ev.lean || 0;
-    this.hop.rotation.z = lerp(this.hop.rotation.z, -lean * 0.4, clamp(10 * dt, 0, 1));
-    this.hop.rotation.y = waddle * 0.35;
-    this.hop.scale.set(1 / Math.sqrt(squash), squash, 1 / Math.sqrt(squash));
-    this.torso.position.y = 0.52 + (onG ? Math.abs(Math.sin(t)) * 0.02 : 0);
-
-    if (this.tail) this.tail.rotation.x = Math.sin(t * 1.2) * 0.25;
-    if (this.scarfT1) {
-      this.scarfT1.rotation.x = 0.15 + Math.sin(t) * 0.2;
-      this.scarfT2.rotation.x = 0.2 + Math.sin(t + 1) * 0.25;
-    }
-    if (this.stringL) {
-      this.stringL.rotation.x = 0.15 + Math.sin(t + 0.4) * 0.15;
-      this.stringR.rotation.x = 0.15 + Math.sin(t + 1.1) * 0.15;
-    }
-    this.headG.rotation.x = (ev.sliding ? -0.28 : -0.02) + Math.sin(t * 0.5) * 0.03;
-    this.headG.rotation.z = -lean * 0.1;
+    this.hop.rotation.z = lerp(this.hop.rotation.z, -lean * 0.35, clamp(10 * dt, 0, 1));
+    // home: yaw so the 3/4 of the face reads while the trail still runs away
+    const wantYaw = ev.homeThreeQ ? (Math.PI - 0.72) : 0;
+    this.hop.rotation.y = lerp(this.hop.rotation.y, wantYaw, clamp(6 * dt, 0, 1));
 
     const shadowScale = ev.jumpY > 0 ? clamp(1 - ev.jumpY * 0.35, 0.4, 1) : 1;
     this.blob.scale.set(shadowScale, shadowScale, 1);
     this.blob.material.opacity = 0.38 * shadowScale;
+
+    // form-shift burst (simple rising dots via leftover particles if World provides none)
+    if (this.burst.length) {
+      for (let i = this.burst.length - 1; i >= 0; i--) {
+        const p = this.burst[i];
+        p.life -= dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        p.vy -= 4 * dt;
+        if (p.life <= 0) this.burst.splice(i, 1);
+      }
+    }
   }
 }
 
@@ -1261,9 +1220,8 @@ class Game {
     this.clock = new THREE.Clock();
 
     this.world = new World(this.scene, this.geo);
-    this.penguin = new Penguin(this.geo);
+    this.penguin = new Penguin();
     this.scene.add(this.penguin.root);
-    this.penguin.setCostume(this.save.equipped || 'classic');
 
     this.pools = new Pools(this.scene, this.geo);
 
@@ -1296,9 +1254,6 @@ class Game {
     this._resize();
     window.addEventListener('resize', () => this._resize());
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.clock.getDelta(); });
-
-    const boot = document.getElementById('boot');
-    if (boot) boot.classList.add('hidden');
 
     this._expose();
     this._loop = this._loop.bind(this);
@@ -1917,7 +1872,8 @@ class Game {
       lean: this.lean,
       falling: dying,
       fallT: this.deadT,
-      onGround: this.jumpY <= 0.02
+      onGround: this.jumpY <= 0.02,
+      homeThreeQ: home
     });
     if (this.invuln > 0 && playing) this.penguin.root.visible = (Math.sin(this.invuln * 30) > 0);
     else this.penguin.root.visible = true;
@@ -1998,8 +1954,8 @@ class Game {
 
     let dist, height, lookAhead, lookY, fov;
     if (home) {
-      // Frame Pip in the open band between the title and the START button.
-      dist = 5.4; height = 2.15; lookAhead = 5.8; lookY = 0.15; fov = 50;
+      // 3/4 facing the camera, trail still receding behind Pip, above the START button.
+      dist = 4.4; height = 1.7; lookAhead = 0.55; lookY = 0.62; fov = 46;
     } else {
       dist = 5.8 - speedK * 0.45;
       height = 2.25 + speedK * 0.15;
@@ -2007,7 +1963,8 @@ class Game {
       lookY = 0.45 + this.jumpY * 0.2;
       fov = 52 + speedK * 8;
     }
-    this.camera.position.set(this.camX + shx, height + bob + shy + this.jumpY * 0.12, this.pz - dist);
+    const side = home ? 1.85 : 0;
+    this.camera.position.set(this.camX + shx + side, height + bob + shy + this.jumpY * 0.12, this.pz - dist);
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(this.camX * 0.2 + this.px * 0.8, lookY, this.pz + lookAhead);
     this.camera.rotateZ(this.camTilt + (this.shake ? (hash(this.elapsed, 3) - 0.5) * this.shake * 0.08 : 0));
@@ -2052,6 +2009,7 @@ class Game {
       get slideT() { return self.slideT; },
       get save() { return self.save; },
       get VERSION() { return VERSION; },
+      get ready() { return !!self.penguin.ready; },
       startRun: (skip) => self.startRun(skip),
       laneX: laneX,
       get countT() { return self.countT; },
@@ -2081,10 +2039,14 @@ class Game {
   }
 }
 
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   try {
     const g = new Game();
     window.__gameCore = g;
+    await g.penguin.load();
+    g.penguin.setCostume(g.save.equipped || 'classic');
+    const boot = document.getElementById('boot');
+    if (boot) boot.classList.add('hidden');
   } catch (err) {
     console.error(err);
     const boot = document.getElementById('boot');

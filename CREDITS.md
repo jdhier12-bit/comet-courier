@@ -29,9 +29,16 @@ runner) names, art, or assets.
   - Winter — lofi guitar with vinyl crackle and a trap kit, instrumental
     https://suno.com/song/84ad4135-c448-4b03-8172-b84e657b993b
 
+## Character
+
+- **Pip the penguin** is based on “Penguin” from the Pixor library by Frakassets,
+  licensed CC0 1.0 (public domain). The source model is a rigged, low-poly penguin
+  with a waddle cycle. A fitted hoodie, extra clips (Run, Idle, Jump, Slide), and
+  in-game tinting were added for Season Shift.
+  https://pixor.art/library/creatures/penguin/
+  License: https://creativecommons.org/publicdomain/zero/1.0/
+
 ## Everything else
 
-Penguin hero (Pip), hoodie costumes, trees, terrain, skies, coins, gates,
-obstacles, HUD, and WebAudio sound effects are original procedural work
-created for this game. No Kenney, Quaternius, or other third-party 3D packs
-were required for this build.
+Hoodie costumes, trees, terrain, skies, coins, gates, obstacles, HUD, and
+WebAudio sound effects are original work created for this game.
