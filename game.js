@@ -1,10 +1,10 @@
-// Season Shift v4.1 — SEASON_SHIFT_V4_1
+// Season Shift v4.2 — SEASON_SHIFT_V4_2
 // An original 3D endless runner for Joseph. Pip the penguin, Bloom & Aurora.
 // Path corners / T-junctions, tilt lanes, swipe jump-slide-turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_1';
+const VERSION = 'SEASON_SHIFT_V4_2';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -23,7 +23,6 @@ const SPAWN_AHEAD = 72;
 const WARMUP = 36;
 const MAX_DT = 0.05;
 const PATH_W = 6.3;
-const TURN_R = 4.5; // must exceed PATH_W/2 so the inner curb radius stays positive
 
 const SEASONS = [
   { id: 'spring', name: 'SPRING', tag: 'Blossom Trails',
@@ -84,42 +83,32 @@ function yawVec(yaw) {
   const sx = Math.cos(yaw), sz = -Math.sin(yaw);
   return { fx, fz, sx, sz, yaw };
 }
+function angLerp(a, b, t) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
 function pathClearance() { return PATH_W * 0.5 + 3.35; }
 function distToSeg(seg, x, z) {
+  const v = yawVec(seg.yaw0);
+  const dx = x - seg.x0, dz = z - seg.z0;
+  const along = dx * v.fx + dz * v.fz;
+  const lat = dx * v.sx + dz * v.sz;
   if (seg.type === 'straight') {
-    const v = yawVec(seg.yaw0);
-    const dx = x - seg.x0, dz = z - seg.z0;
-    const along = dx * v.fx + dz * v.fz;
-    const lat = Math.abs(dx * v.sx + dz * v.sz);
     if (along < -0.8 || along > seg.length + 0.8) {
       return Math.min(Math.hypot(x - seg.x0, z - seg.z0), Math.hypot(x - (seg.x1 ?? seg.x0), z - (seg.z1 ?? seg.z0)));
     }
-    return lat;
+    return Math.abs(lat);
   }
-  const dir = seg.dir || (seg.type === 'left' ? -1 : 1);
-  const v0 = yawVec(seg.yaw0);
-  const R = TURN_R;
-  const cx = dir < 0 ? seg.x0 + v0.sx * R : seg.x0 - v0.sx * R;
-  const cz = dir < 0 ? seg.z0 + v0.sz * R : seg.z0 - v0.sz * R;
-  const vx = x - cx, vz = z - cz;
-  const rad = Math.hypot(vx, vz);
-  const sx0 = seg.x0 - cx, sz0 = seg.z0 - cz;
-  const sx1 = (seg.x1 ?? seg.x0) - cx, sz1 = (seg.z1 ?? seg.z0) - cz;
-  const ang = (ax, az, bx, bz) => Math.atan2(ax * bz - az * bx, ax * bx + az * bz);
-  const span = ang(sx0, sz0, sx1, sz1);
-  const a = ang(sx0, sz0, vx, vz);
-  const tt = span !== 0 ? a / span : 0;
-  if (tt < -0.12 || tt > 1.12) {
-    return Math.min(Math.hypot(x - seg.x0, z - seg.z0), Math.hypot(x - (seg.x1 ?? seg.x0), z - (seg.z1 ?? seg.z0)));
-  }
-  return Math.abs(rad - R);
+  // Square corner / T tile centered on the junction.
+  const half = PATH_W * 0.5;
+  const qx = clamp(lat, -half, half);
+  const qz = clamp(along, -half, half);
+  return Math.hypot(lat - qx, along - qz);
 }
 function allPathSegs(path) {
-  const list = path.segs.slice();
-  if (path.branches && path.branches.left) list.push(...path.branches.left.segs);
-  if (path.branches && path.branches.right) list.push(...path.branches.right.segs);
-  if (path._lastAbandoned) list.push(...path._lastAbandoned.segs);
-  return list;
+  return path.visuals();
 }
 function onAnyPath(path, x, z, pad) {
   const need = pad == null ? pathClearance() : pad;
@@ -409,6 +398,7 @@ function geoCache() {
     daisy: new THREE.CircleGeometry(0.12, 8),
     streak: new THREE.BoxGeometry(0.03, 0.03, 1.4),
     pathSlab: new THREE.BoxGeometry(PATH_W, 0.16, 1),
+    cornerSlab: new THREE.BoxGeometry(PATH_W, 0.16, PATH_W),
     curb: new THREE.BoxGeometry(0.22, 0.22, 1),
     wing: new THREE.BoxGeometry(10, 0.08, 1),
     chevron: new THREE.ConeGeometry(0.28, 0.7, 3),
@@ -518,77 +508,6 @@ function makeOceanMat() {
   });
 }
 
-function makeArcGeom(dir, kind = 'slab') {
-  // Thick quarter-ring that overlaps the incoming and outgoing straights to hide seams.
-  // kind 'slab' is the road deck; 'curbIn' / 'curbOut' are the rounded edge rails.
-  const R = TURN_R;
-  const half = PATH_W * 0.5;
-  const steps = 28;
-  const overlap = 0.55 / R; // radians of extra arc at each end
-  const vScale = (Math.abs((Math.PI / 2) + 2 * overlap) * R) / 8; // dash scale close to a mid-length straight
-  // Local space: incoming along +Z, corner at the origin.
-  // Left (dir<0) swings toward +X around center (+R,0): theta π → π/2.
-  // Right (dir>0) swings toward -X around center (-R,0): theta 0 → π/2.
-  const cx = dir < 0 ? R : -R;
-  const cz = 0;
-  const a0 = dir < 0 ? (Math.PI + overlap) : (0 - overlap);
-  const a1 = dir < 0 ? (Math.PI / 2 - overlap) : (Math.PI / 2 + overlap);
-  let r0, r1, y0, y1;
-  if (kind === 'slab') {
-    r0 = R - half; r1 = R + half; y0 = -0.06; y1 = 0.10;
-  } else if (kind === 'curbIn') {
-    r0 = R - half - 0.12; r1 = R - half + 0.12; y0 = 0.02; y1 = 0.24;
-  } else {
-    r0 = R + half - 0.12; r1 = R + half + 0.12; y0 = 0.02; y1 = 0.24;
-  }
-  const verts = [], norms = [], uvs = [], idx = [];
-  const push = (x, y, z, nx, ny, nz, u, v) => {
-    verts.push(x, y, z); norms.push(nx, ny, nz); uvs.push(u, v);
-  };
-  const base = 0;
-  // top face
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const a = a0 + (a1 - a0) * t;
-    const ca = Math.cos(a), sa = Math.sin(a);
-    push(cx + ca * r0, y1, cz + sa * r0, 0, 1, 0, 0, t * vScale);
-    push(cx + ca * r1, y1, cz + sa * r1, 0, 1, 0, 1, t * vScale);
-  }
-  const flip = a1 < a0;
-  for (let i = 0; i < steps; i++) {
-    const a = i * 2;
-    if (flip) idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-    else idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-  }
-  // vertical outer / inner walls so the deck has thickness and hides the joint
-  const topCount = (steps + 1) * 2;
-  for (let wall = 0; wall < 2; wall++) {
-    const r = wall === 0 ? r0 : r1;
-    const sign = wall === 0 ? -1 : 1;
-    const wbase = verts.length / 3;
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const a = a0 + (a1 - a0) * t;
-      const ca = Math.cos(a), sa = Math.sin(a);
-      const nx = ca * sign, nz = sa * sign;
-      push(cx + ca * r, y0, cz + sa * r, nx, 0, nz, t, 0);
-      push(cx + ca * r, y1, cz + sa * r, nx, 0, nz, t, 1);
-    }
-    for (let i = 0; i < steps; i++) {
-      const a = wbase + i * 2;
-      if (wall === 0) idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-      else idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-    }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(norms, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  g.setIndex(idx);
-  g.computeVertexNormals();
-  return g;
-}
-
 function makeArrowGeom() {
   const s = new THREE.Shape();
   s.moveTo(0, 1.15);
@@ -610,7 +529,7 @@ function straightLenFor(elapsed) {
   const u = clamp(elapsed / 70, 0, 1);
   return lerp(44, 16, u * u * 0.3 + u * 0.7);
 }
-const ARC_LEN = Math.PI * 0.5 * TURN_R;
+const SNAP_DUR = 0.15; // 0.12–0.18s heading snap at a sharp corner
 
 function poseAtStraight(seg, d, lx) {
   const t = d - seg.dist0;
@@ -622,23 +541,8 @@ function poseAtStraight(seg, d, lx) {
     fx: v.fx, fz: v.fz, sx: v.sx, sz: v.sz
   };
 }
-function poseOnArc(start, dir, distAlong, lx) {
-  const t = clamp(distAlong / ARC_LEN, 0, 1);
-  const yaw = start.yaw + (dir < 0 ? 1 : -1) * t * Math.PI * 0.5;
-  const v0 = yawVec(start.yaw);
-  const v = yawVec(yaw);
-  const R = TURN_R;
-  let x, z;
-  if (dir < 0) {
-    const cx = start.x + v0.sx * R, cz = start.z + v0.sz * R;
-    x = cx - v.sx * R + v.sx * lx;
-    z = cz - v.sz * R + v.sz * lx;
-  } else {
-    const cx = start.x - v0.sx * R, cz = start.z - v0.sz * R;
-    x = cx + v.sx * R + v.sx * lx;
-    z = cz + v.sz * R + v.sz * lx;
-  }
-  return { x, z, yaw, fx: v.fx, fz: v.fz, sx: v.sx, sz: v.sz };
+function turnYaw(yaw, dir) {
+  return yaw + (dir < 0 ? 1 : -1) * Math.PI * 0.5;
 }
 
 class PathSystem {
@@ -646,10 +550,12 @@ class PathSystem {
   _clear() {
     this.segs = [];
     this.pending = null;
+    this.pendingCorner = null;
     this.branches = { left: null, right: null };
     this.end = { x: 0, z: 0, yaw: 0, dist: 0 };
     this.preview = false;
     this._id = 1;
+    this._lastAbandoned = null;
   }
   resetPreview() {
     this._clear();
@@ -668,7 +574,9 @@ class PathSystem {
       id: this._id++, type: 'straight',
       dist0: s.dist, dist1: s.dist + len, length: len,
       x0: s.x, z0: s.z, yaw0: s.yaw,
-      x1: s.x + v.fx * len, z1: s.z + v.fz * len, yaw1: s.yaw
+      x1: s.x + v.fx * len, z1: s.z + v.fz * len, yaw1: s.yaw,
+      cap0: onto ? 'corner' : 'flat',
+      cap1: 'flat'
     };
     if (!onto) {
       this.segs.push(seg);
@@ -676,36 +584,44 @@ class PathSystem {
     }
     return seg;
   }
-  _buildBranch(start, dir, afterLen) {
-    const arc = {
-      id: this._id++, type: dir < 0 ? 'left' : 'right', dir,
-      dist0: start.dist, dist1: start.dist + ARC_LEN, length: ARC_LEN,
-      x0: start.x, z0: start.z, yaw0: start.yaw
+  _markEndCorner() {
+    const last = this.segs[this.segs.length - 1];
+    if (last && last.type === 'straight') last.cap1 = 'corner';
+  }
+  _makeCorner(start, typ) {
+    return {
+      id: this._id++, type: typ, dir: typ === 'left' ? -1 : typ === 'right' ? 1 : 0,
+      dist0: start.dist, dist1: start.dist, length: 0,
+      x0: start.x, z0: start.z, yaw0: start.yaw,
+      x1: start.x, z1: start.z, yaw1: start.yaw
     };
-    const endPose = poseOnArc(start, dir, ARC_LEN, 0);
-    arc.x1 = endPose.x; arc.z1 = endPose.z; arc.yaw1 = endPose.yaw;
-    const mid = { x: endPose.x, z: endPose.z, yaw: endPose.yaw, dist: arc.dist1 };
+  }
+  _buildBranch(start, dir, afterLen) {
+    const yaw1 = turnYaw(start.yaw, dir);
+    const mid = { x: start.x, z: start.z, yaw: yaw1, dist: start.dist };
     const st = this._pushStraight(afterLen, mid);
     st.id = this._id++;
-    // fix st to start from mid
-    const v = yawVec(mid.yaw);
-    st.dist0 = mid.dist; st.dist1 = mid.dist + afterLen; st.length = afterLen;
-    st.x0 = mid.x; st.z0 = mid.z; st.yaw0 = mid.yaw;
-    st.x1 = mid.x + v.fx * afterLen; st.z1 = mid.z + v.fz * afterLen; st.yaw1 = mid.yaw;
+    const v = yawVec(yaw1);
+    st.dist0 = start.dist; st.dist1 = start.dist + afterLen; st.length = afterLen;
+    st.x0 = start.x; st.z0 = start.z; st.yaw0 = yaw1;
+    st.x1 = start.x + v.fx * afterLen; st.z1 = start.z + v.fz * afterLen; st.yaw1 = yaw1;
+    st.cap0 = 'corner'; st.cap1 = 'flat';
     return {
-      segs: [arc, st],
+      segs: [st],
       end: { x: st.x1, z: st.z1, yaw: st.yaw1, dist: st.dist1 }
     };
   }
   _planTurn(elapsed) {
     const typ = this.preview ? null : pick(['left', 'right', 'left', 'right', 'tee']);
     if (!typ) return;
+    this._markEndCorner();
     this.pending = {
       type: typ,
       dist: this.end.dist,
       x: this.end.x, z: this.end.z, yaw: this.end.yaw,
       committed: false, chosen: 0
     };
+    this.pendingCorner = this._makeCorner(this.end, typ);
     const after = straightLenFor(elapsed);
     this.branches.left = (typ === 'left' || typ === 'tee') ? this._buildBranch(this.end, -1, after) : null;
     this.branches.right = (typ === 'right' || typ === 'tee') ? this._buildBranch(this.end, 1, after) : null;
@@ -719,10 +635,12 @@ class PathSystem {
     if (!branch) return false;
     p.committed = true;
     p.chosen = dir;
+    if (this.pendingCorner) this.segs.push(this.pendingCorner);
     for (const seg of branch.segs) this.segs.push(seg);
     this.end = branch.end;
     const unused = dir < 0 ? this.branches.right : this.branches.left;
     this.pending = null;
+    this.pendingCorner = null;
     this.branches = { left: null, right: null };
     this._lastAbandoned = unused;
     this._planTurn(elapsed);
@@ -732,7 +650,9 @@ class PathSystem {
     return this.pending ? this.pending.dist : this.end.dist;
   }
   resolve(dist, lx = 0, followPending = false) {
-    for (const seg of this.segs) {
+    for (let i = this.segs.length - 1; i >= 0; i--) {
+      const seg = this.segs[i];
+      if (seg.length <= 1e-6) continue;
       if (dist <= seg.dist1 + 1e-4 && dist >= seg.dist0 - 1e-4) {
         return this._poseSeg(seg, dist, lx);
       }
@@ -751,7 +671,9 @@ class PathSystem {
         : typ === 'right' ? this.branches.right
         : (this.branches.left || this.branches.right);
       if (br) {
-        for (const seg of br.segs) {
+        for (let i = br.segs.length - 1; i >= 0; i--) {
+          const seg = br.segs[i];
+          if (seg.length <= 1e-6) continue;
           if (dist <= seg.dist1 + 1e-4 && dist >= seg.dist0 - 1e-4) {
             return this._poseSeg(seg, dist, lx);
           }
@@ -774,8 +696,7 @@ class PathSystem {
     return this._poseSeg(br.segs[br.segs.length - 1], br.segs[br.segs.length - 1].dist1, lx);
   }
   _poseSeg(seg, dist, lx) {
-    if (seg.type === 'straight') return poseAtStraight(seg, dist, lx);
-    return poseOnArc({ x: seg.x0, z: seg.z0, yaw: seg.yaw0, dist: seg.dist0 }, seg.dir || (seg.type === 'left' ? -1 : 1), dist - seg.dist0, lx);
+    return poseAtStraight(seg, dist, lx);
   }
   extendPreview(playerDist) {
     if (!this.preview) return;
@@ -791,10 +712,12 @@ class PathSystem {
     last.dist1 = d; last.length = d - last.dist0;
     last.x1 = pose.x; last.z1 = pose.z; last.yaw1 = pose.yaw;
     this.end = { x: pose.x, z: pose.z, yaw: pose.yaw, dist: d };
+    last.cap1 = 'corner';
     this.pending = null;
+    this.pendingCorner = null;
     this.branches = { left: null, right: null };
-    // plan a specific type
     this.pending = { type, dist: d, x: pose.x, z: pose.z, yaw: pose.yaw, committed: false, chosen: 0 };
+    this.pendingCorner = this._makeCorner(this.end, type);
     const after = 28;
     this.branches.left = (type === 'left' || type === 'tee') ? this._buildBranch(this.end, -1, after) : null;
     this.branches.right = (type === 'right' || type === 'tee') ? this._buildBranch(this.end, 1, after) : null;
@@ -802,6 +725,7 @@ class PathSystem {
   }
   visuals() {
     const list = this.segs.slice();
+    if (this.pendingCorner) list.push(this.pendingCorner);
     if (this.branches.left) list.push(...this.branches.left.segs);
     if (this.branches.right) list.push(...this.branches.right.segs);
     if (this._lastAbandoned) list.push(...this._lastAbandoned.segs);
@@ -1433,38 +1357,60 @@ class World {
     g.userData.segId = seg.id;
     const mat = this._pathMatFor(season);
     if (seg.type === 'straight') {
-      // Stop the slab at the corner; the arc overlaps backward so the end cap is hidden.
-      const len = Math.max(0.2, seg.length - 0.12);
+      const half = PATH_W * 0.5;
+      const overlap = 0.18;
+      let slabLen = Math.max(0.2, seg.length);
+      let slabZ = 0;
+      if (seg.cap0 === 'corner') { slabLen += overlap; slabZ -= overlap * 0.5; }
+      if (seg.cap1 === 'corner') { slabLen += overlap; slabZ += overlap * 0.5; }
       const slab = new THREE.Mesh(this.geo.pathSlab, mat);
-      slab.scale.z = len;
-      slab.position.y = 0.02;
+      slab.scale.z = slabLen;
+      slab.position.set(0, 0.02, slabZ);
       slab.receiveShadow = true;
       slab.castShadow = false;
       g.add(slab);
+      let curbLen = seg.length;
+      let curbZ = 0;
+      const cut = half - 0.04;
+      if (seg.cap0 === 'corner') { curbLen -= cut; curbZ += cut * 0.5; }
+      if (seg.cap1 === 'corner') { curbLen -= cut; curbZ -= cut * 0.5; }
+      curbLen = Math.max(0.2, curbLen);
       const curbL = new THREE.Mesh(this.geo.curb, this.curbMat);
       const curbR = new THREE.Mesh(this.geo.curb, this.curbMat);
-      curbL.scale.z = curbR.scale.z = len;
-      curbL.position.set(-PATH_W * 0.5, 0.12, 0);
-      curbR.position.set(PATH_W * 0.5, 0.12, 0);
+      curbL.scale.z = curbR.scale.z = curbLen;
+      curbL.position.set(-PATH_W * 0.5, 0.12, curbZ);
+      curbR.position.set(PATH_W * 0.5, 0.12, curbZ);
       curbL.castShadow = curbR.castShadow = true;
       g.add(curbL, curbR);
       const mid = poseAtStraight(seg, (seg.dist0 + seg.dist1) * 0.5, 0);
       g.position.set(mid.x, 0, mid.z);
       g.rotation.y = seg.yaw0;
     } else {
-      const dir = seg.dir || (seg.type === 'left' ? -1 : 1);
-      const arcMat = mat.clone();
-      arcMat.side = THREE.DoubleSide;
-      arcMat.polygonOffset = true;
-      arcMat.polygonOffsetFactor = -1;
-      arcMat.polygonOffsetUnits = -2;
-      const arc = new THREE.Mesh(makeArcGeom(dir, 'slab'), arcMat);
-      arc.receiveShadow = true;
-      arc.renderOrder = 1;
-      const curbIn = new THREE.Mesh(makeArcGeom(dir, 'curbIn'), this.curbMat);
-      const curbOut = new THREE.Mesh(makeArcGeom(dir, 'curbOut'), this.curbMat);
-      curbIn.castShadow = curbOut.castShadow = true;
-      g.add(arc, curbIn, curbOut);
+      // Sharp square corner / T tile. Curbs only on the exposed outer edges.
+      const tileMat = mat.clone();
+      tileMat.polygonOffset = true;
+      tileMat.polygonOffsetFactor = -1;
+      tileMat.polygonOffsetUnits = -2;
+      const tile = new THREE.Mesh(this.geo.cornerSlab, tileMat);
+      tile.position.y = 0.02;
+      tile.receiveShadow = true;
+      tile.renderOrder = 1;
+      g.add(tile);
+      const typ = seg.type;
+      const edges = typ === 'tee' ? ['fwd']
+        : typ === 'left' ? ['left', 'fwd']
+        : typ === 'right' ? ['right', 'fwd']
+        : ['left', 'right', 'fwd'];
+      const half = PATH_W * 0.5;
+      for (const e of edges) {
+        const c = new THREE.Mesh(this.geo.curb, this.curbMat);
+        c.scale.z = PATH_W;
+        c.castShadow = true;
+        if (e === 'fwd') { c.position.set(0, 0.12, half); c.rotation.y = Math.PI / 2; }
+        else if (e === 'left') { c.position.set(-half, 0.12, 0); }
+        else { c.position.set(half, 0.12, 0); }
+        g.add(c);
+      }
       g.position.set(seg.x0, 0, seg.z0);
       g.rotation.y = seg.yaw0;
     }
@@ -2024,7 +1970,10 @@ class Game {
     this.score = 0; this.runCoins = 0;
     this.shake = 0; this.deadT = 0; this.invuln = 0;
     this.camX = 0; this.camTilt = 0; this.camFov = 54;
+    this.camYaw = 0;
     this.fovKick = 0;
+    this.snap = null; this.snapAt = null; this.snapDir = 0;
+    this.turnLean = 0;
     this.spawnZ = 0; this.rowCount = 0; this.lastGate = -10;
     this.lean = 0;
     this.homeOff = 0;
@@ -2266,11 +2215,16 @@ class Game {
     if (!p || p.committed || !this.turnBuf) return false;
     const w = this._turnWindow(this.speed);
     if (this.pz < p.dist - w.before || this.pz > p.dist + w.after) return false;
-    if (this.path.commit(this.turnBuf, this.elapsed)) {
+    const cornerDist = p.dist;
+    const dir = this.turnBuf;
+    if (this.path.commit(dir, this.elapsed)) {
       Sfx.turn();
-      this.fovKick = Math.max(this.fovKick, 6);
-      this.shake = Math.max(this.shake, 0.18);
+      this.fovKick = Math.max(this.fovKick, 3.5);
+      this.shake = Math.max(this.shake, 0.1);
       this.turnBuf = 0; this.turnBufT = 0;
+      this.snapAt = cornerDist;
+      this.snapDir = dir;
+      if (this.pz >= cornerDist - 0.25) this._beginSnap(dir);
       this.world.syncPath(this.path, this.season, this.pz);
       this._ensureSpawn();
       return true;
@@ -2286,6 +2240,18 @@ class Game {
     this.offVelY = 1.6;
     this.shake = 0.45;
     this.fovKick = 8;
+    this.snap = null; this.snapAt = null;
+  }
+  _beginSnap(dir) {
+    this.snap = {
+      t: 0,
+      dur: SNAP_DUR,
+      dir,
+      yaw0: this.camYaw != null ? this.camYaw : this.yaw,
+      x0: this.wx,
+      z0: this.wz
+    };
+    this.snapAt = null;
   }
 
   _setSeason(i, snap) {
@@ -2359,9 +2325,12 @@ class Game {
     this.homeOff = 0;
     this.pz = 0; this.px = 0; this.lane = 0;
     this.wx = 0; this.wz = 0; this.yaw = 0;
+    this.camYaw = 0;
     this.jumpY = 0; this.jumpV = 0; this.slideT = 0;
     this.speed = 10.5; this.elapsed = 0;
     this.offPath = false;
+    this.snap = null; this.snapAt = null; this.snapDir = 0;
+    this.turnLean = 0;
     this.path.resetPreview();
     this.pools.releaseAll();
     this.penguin.root.position.set(0, 0, 0);
@@ -2467,11 +2436,14 @@ class Game {
     this.pools.releaseAll();
     this.lane = 0; this.px = 0; this.pz = 0;
     this.wx = 0; this.wz = 0; this.yaw = 0;
+    this.camYaw = 0;
     this.jumpY = 0; this.jumpV = 0; this.slideT = 0;
     this.phase = BLOOM; this.phaseCd = 0;
     this.offPath = false;
     this.turnBuf = 0; this.turnBufT = 0;
     this.fovKick = 0;
+    this.snap = null; this.snapAt = null; this.snapDir = 0;
+    this.turnLean = 0;
     this.penguin.setForm(BLOOM, true);
     this.penguin.setCostume(this.save.equipped);
     this.penguin.root.rotation.set(0, 0, 0);
@@ -2711,6 +2683,7 @@ class Game {
         if (this.turnBufT <= 0) this.turnBuf = 0;
       }
       this._tryConsumeTurn();
+      if (this.snapAt != null && !this.snap && this.pz >= this.snapAt) this._beginSnap(this.snapDir);
       const pend = this.path.pending;
       if (pend && !pend.committed && !this.offPath) {
         const w = this._turnWindow(this.speed);
@@ -2774,9 +2747,24 @@ class Game {
       this.jumpY = Math.max(-4, this.jumpY + this.offVelY * dt);
       if (this.jumpY < -0.6 && this.state === 'play') this._die();
       this.pose = { x: this.wx, z: this.wz, yaw: this.yaw, ...yawVec(this.yaw) };
+      this.turnLean *= Math.max(0, 1 - 10 * dt);
     } else {
-      this.pose = this.path.resolve(this.pz, this.px, false);
-      this.wx = this.pose.x; this.wz = this.pose.z; this.yaw = this.pose.yaw;
+      const logical = this.path.resolve(this.pz, this.px, false);
+      if (this.snap) {
+        this.snap.t += dt;
+        const u = clamp(this.snap.t / this.snap.dur, 0, 1);
+        const e = 1 - (1 - u) * (1 - u);
+        this.yaw = angLerp(this.snap.yaw0, logical.yaw, e);
+        this.wx = lerp(this.snap.x0, logical.x, e);
+        this.wz = lerp(this.snap.z0, logical.z, e);
+        this.pose = { x: this.wx, z: this.wz, yaw: this.yaw, ...yawVec(this.yaw) };
+        this.turnLean = this.snap.dir * Math.sin(u * Math.PI) * 0.9;
+        if (u >= 1) { this.snap = null; this.turnLean = 0; }
+      } else {
+        this.pose = logical;
+        this.wx = logical.x; this.wz = logical.z; this.yaw = logical.yaw;
+        this.turnLean *= Math.max(0, 1 - 12 * dt);
+      }
     }
 
     this.penguin.root.position.set(this.wx, Math.max(0, this.jumpY < 0 && this.offPath ? this.jumpY : 0), this.wz);
@@ -2787,7 +2775,7 @@ class Game {
       speed: this.speed,
       jumpY: Math.max(0, this.jumpY),
       sliding: this.slideT > 0 && this.jumpY <= 0.02,
-      lean: this.lean,
+      lean: this.lean + this.turnLean,
       falling: dying || (this.offPath && this.jumpY < 0.1),
       fallT: this.deadT,
       onGround: this.jumpY <= 0.02,
@@ -2898,7 +2886,9 @@ class Game {
     const shy = this.shake ? (hash(this.elapsed, 2) - 0.5) * this.shake * 0.3 : 0;
 
     this.camX += (this.px - this.camX) * Math.min(1, 6.2 * dt);
-    const v = this.pose || yawVec(this.yaw);
+    const yawFollow = this.snap ? 11 : 16;
+    this.camYaw = angLerp(this.camYaw || 0, this.yaw, 1 - Math.exp(-yawFollow * dt));
+    const v = yawVec(this.camYaw);
     let dist, height, lookAhead, lookY, fov;
     if (home) {
       dist = 4.4; height = 1.7; lookAhead = 0.55; lookY = 0.62; fov = 46;
