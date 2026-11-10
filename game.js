@@ -1,10 +1,10 @@
-// Season Shift v4.5 — SEASON_SHIFT_V4_5
+// Season Shift v4.6 — SEASON_SHIFT_V4_6
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, swipe lanes, tilt turns, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_5';
+const VERSION = 'SEASON_SHIFT_V4_6';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -31,6 +31,12 @@ const DASH_W = 0.09;
 const DASH_Y = 0.115;
 const LANE_MARKS = [-1.5 * LANE_W, -0.5 * LANE_W, 0.5 * LANE_W, 1.5 * LANE_W];
 const CORNER_SAFE_SEC = 1.75; // no obstacles/gates for this many seconds after a corner
+const COIN_SCALE = 0.63;       // visual size vs. the original 0.26-radius coins
+const COIN_R = 0.26 * COIN_SCALE;
+const COIN_THICK = 0.07 * COIN_SCALE;
+const COIN_RIM = 0.04 * COIN_SCALE;
+const COIN_GAP = 2;            // constant path-distance spacing, same lane and across lines
+const COIN_Y = 0.46;
 
 const SEASONS = [
   { id: 'spring', name: 'SPRING', tag: 'Blossom Trails',
@@ -131,6 +137,7 @@ window.__SHOP = { UPGRADES, COSTUMES };
 window.__SEASONS = SEASONS;
 window.__PHASE = { BLOOM, AURORA, NAME: PHASE_NAME, COL: PHASE_COL, COL_B: PHASE_COL_B };
 window.__TILT = { ON: TILT_TURN_ON, OFF: TILT_TURN_OFF };
+window.__COIN = { SCALE: COIN_SCALE, GAP: COIN_GAP, R: COIN_R, Y: COIN_Y };
 
 // ---------------- save ----------------
 function defaultSave() {
@@ -536,8 +543,8 @@ function geoCache() {
     cone: new THREE.ConeGeometry(1, 1, 14),
     frond: new THREE.SphereGeometry(0.5, 12, 8),
     box: new THREE.BoxGeometry(1, 1, 1),
-    coin: new THREE.CylinderGeometry(0.26, 0.26, 0.07, 22),
-    coinI: new THREE.TorusGeometry(0.26, 0.04, 8, 22),
+    coin: new THREE.CylinderGeometry(COIN_R, COIN_R, COIN_THICK, 22),
+    coinI: new THREE.TorusGeometry(COIN_R, COIN_RIM, 8, 22),
     plane: new THREE.PlaneGeometry(1, 1, 1, 1),
     hood: new THREE.SphereGeometry(0.34, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.52),
     daisy: new THREE.CircleGeometry(0.12, 8),
@@ -1953,7 +1960,7 @@ class Pools {
     this.coins = [];
     this.gates = [];
     this.obs = [];
-    for (let i = 0; i < 28; i++) this.coins.push(this._coin());
+    for (let i = 0; i < 48; i++) this.coins.push(this._coin());
     for (let i = 0; i < 8; i++) this.gates.push(this._gate());
     for (let i = 0; i < 14; i++) this.obs.push(this._obs());
   }
@@ -2719,6 +2726,7 @@ class Game {
     this.lives = this.save.upgrades.extraLife | 0;
     this.coinMul = 1 + 0.5 * (this.save.upgrades.doubleCoins | 0);
     this.magLv = this.save.upgrades.magnet | 0;
+    this._coinAt = { [-1]: -Infinity, 0: -Infinity, 1: -Infinity };
     this.ignoreHit = false;
     this.path.resetRun(this.elapsed);
     this.spawnZ = this.pz + WARMUP;
@@ -2852,10 +2860,33 @@ class Game {
     }
     if (Math.random() < 0.7) this._addCoinLine(sh[n] ?? 0, z + 2, 3);
   }
+  _nextCoinZ(lane, z) {
+    const gap = COIN_GAP;
+    let z0 = Math.ceil((z - 1e-6) / gap) * gap;
+    const last = this._coinAt && this._coinAt[lane];
+    if (last != null && last !== -Infinity && z0 < last + gap - 1e-6) z0 = last + gap;
+    return z0;
+  }
+  _coinSlotBlocked(z) {
+    const near = 0.7;
+    for (const list of [this.pools.gates, this.pools.obs]) {
+      for (const o of list) {
+        if (o.live && Math.abs(o.z - z) < near) return true;
+      }
+    }
+    return false;
+  }
   _addCoinLine(lane, z, n) {
-    for (let i = 0; i < n; i++) {
-      const ph = (i % 2 === 0) ? ((Math.random() < 0.7) ? this.phase : this.phase ^ 1) : (Math.random() < 0.5 ? 0 : 1);
-      this._addCoin(lane, z + i * 1.7, 0, ph);
+    if (!this._coinAt) this._coinAt = { [-1]: -Infinity, 0: -Infinity, 1: -Infinity };
+    let z0 = this._nextCoinZ(lane, z);
+    let placed = 0, guard = 0;
+    while (placed < n && guard++ < 48) {
+      if (this._coinSlotBlocked(z0)) { z0 += COIN_GAP; continue; }
+      const ph = (placed % 2 === 0) ? ((Math.random() < 0.7) ? this.phase : this.phase ^ 1) : (Math.random() < 0.5 ? 0 : 1);
+      this._addCoin(lane, z0, 0, ph);
+      this._coinAt[lane] = z0;
+      placed++;
+      z0 += COIN_GAP;
     }
   }
   _addCoin(lane, z, h, phase) {
@@ -2884,7 +2915,7 @@ class Game {
     const pose = this.path.resolve(o.z, lx, true);
     o.mesh.position.set(pose.x, 0, pose.z);
     o.mesh.rotation.y = pose.yaw;
-    if (o.type === 'coin') o.mesh.position.y = 0.55 + (o.h || 0);
+    if (o.type === 'coin') o.mesh.position.y = COIN_Y + (o.h || 0);
   }
 
   collides(o) {
@@ -3152,7 +3183,7 @@ class Game {
       if (!o.live || o.taken) continue;
       o.mesh.rotation.y += dt * 4.2;
       const pose = this.path.resolve(o.z, laneX(o.lane), true);
-      o.mesh.position.set(pose.x, 0.55 + o.h + Math.sin(t * 4 + o.z) * 0.08, pose.z);
+      o.mesh.position.set(pose.x, COIN_Y + o.h + Math.sin(t * 4 + o.z) * 0.05, pose.z);
       o.mesh.rotation.y = pose.yaw + t * 4.2;
       const match = o.phase === this.phase;
       o.mesh.scale.setScalar(match ? 1 : 0.82);
