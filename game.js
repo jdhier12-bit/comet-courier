@@ -1,8 +1,8 @@
-// Season Shift v3.1 — SEASON_SHIFT_V3_1
+// Season Shift v3.1 — SEASON_SHIFT_V3_1_1
 // An original 3D endless runner for Joseph. Pip the hoodie penguin, Ember & Frost.
 import * as THREE from './lib/three.module.min.js';
 
-const VERSION = 'SEASON_SHIFT_V3_1';
+const VERSION = 'SEASON_SHIFT_V3_1_1';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 const EMBER = 0, FROST = 1;

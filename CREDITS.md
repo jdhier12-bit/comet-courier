@@ -26,7 +26,8 @@ runner) names, art, or assets.
   - Spring — smooth jazz piano, instrumental
   - Summer — Beach Boys style with a little reggae, instrumental
   - Autumn — big band, Frank Sinatra style, instrumental
-  - Winter — lofi grooves with crackling vinyl, guitar, synth and a trap kit, instrumental
+  - Winter — lofi guitar with vinyl crackle and a trap kit, instrumental
+    https://suno.com/song/84ad4135-c448-4b03-8172-b84e657b993b
 
 ## Everything else
 
