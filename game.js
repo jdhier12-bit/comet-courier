@@ -1,11 +1,11 @@
-// Season Shift v5.2 — SEASON_SHIFT_V5_2
+// Season Shift v5.3 — SEASON_SHIFT_V5_3
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, tilt to steer, swipe to turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 import { mergeGeometries } from './lib/BufferGeometryUtils.js';
 
-const VERSION = 'SEASON_SHIFT_V5_2';
+const VERSION = 'SEASON_SHIFT_V5_3';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -40,6 +40,10 @@ const HURDLE_W_ALL = 3.85;
 const HURDLE_W_WIDE = 2.20;
 const HURDLE_W_LANE = 1.05;
 const GATE_ALL_HALF = PATH_W * 0.5 - 0.10; // 2.00
+// Slim panda body (not fur / aura). Overlap must exceed HIT_FORGIVE to count.
+const BODY_R = 0.28;
+const BODY_Z = 0.22;
+const HIT_FORGIVE = 0.10;
 const STEER_WHOOSH_VX = 6.2;
 const STEER_WHOOSH_CD = 0.45;
 const TILT_TURN_OFF = 8; // leftover hysteresis for the tilt filter only
@@ -157,6 +161,42 @@ window.__TILT = { DEADZONE: TILT_DEADZONE, FULL: TILT_FULL, MAX_SPEED: STEER_MAX
 window.__PATH = { W: PATH_W, LANE: LANE_W, EDGE: STEER_EDGE, WARMUP, CORNER_SAFE_SEC };
 window.__COIN = { SCALE: COIN_SCALE, GAP: COIN_GAP, R: COIN_R, Y: COIN_Y };
 window.__HURDLE = { CLEAR: HURDLE_CLEAR, H: HURDLE_H, CAM_TURN: CAM_TURN_DUR };
+window.__HIT = { BODY_R, BODY_Z, FORGIVE: HIT_FORGIVE, W_ALL: HURDLE_W_ALL, W_WIDE: HURDLE_W_WIDE, W_LANE: HURDLE_W_LANE };
+
+function meshAncestorsVisible(obj, root) {
+  let p = obj;
+  while (p) {
+    if (p.visible === false) return false;
+    if (p === root) break;
+    p = p.parent;
+  }
+  return true;
+}
+
+const _hitBox = new THREE.Box3();
+const _hitTmp = new THREE.Box3();
+const _hitInv = new THREE.Matrix4();
+
+// Bounding box of currently-visible meshes, in the root's local space
+// (path-x is local x, path-z is local z once the obstacle group is placed).
+function localVisibleBox(root) {
+  if (!root) return null;
+  root.updateWorldMatrix(true, true);
+  _hitInv.copy(root.matrixWorld).invert();
+  let any = false;
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry) return;
+    if (!meshAncestorsVisible(obj, root)) return;
+    if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+    _hitTmp.copy(obj.geometry.boundingBox);
+    _hitTmp.applyMatrix4(obj.matrixWorld);
+    _hitTmp.applyMatrix4(_hitInv);
+    if (!any) { _hitBox.copy(_hitTmp); any = true; }
+    else _hitBox.union(_hitTmp);
+  });
+  return any ? _hitBox : null;
+}
+
 
 // ---------------- save ----------------
 function defaultSave() {
@@ -2627,15 +2667,19 @@ class Pools {
       o.left.position.x = -GATE_ALL_HALF; o.right.position.x = GATE_ALL_HALF;
       if (o.capL) o.capL.position.x = -GATE_ALL_HALF;
       if (o.capR) o.capR.position.x = GATE_ALL_HALF;
-      o.top.scale.x = 1;
+      o.top.scale.set(1, 1, 1);
       o.panel.scale.x = 1;
+      o.cover = [-1, 0, 1];
     } else {
       const h = 0.52;
       o.left.position.x = -h; o.right.position.x = h;
       if (o.capL) o.capL.position.x = -h;
       if (o.capR) o.capR.position.x = h;
-      o.top.scale.x = (h * 2) / (GATE_ALL_HALF * 2);
+      // The beam capsule is authored along local Y, then rotated 90° about Z
+      // so its length is world-X. Scale local Y, not local X.
+      o.top.scale.set(1, (h * 2) / (GATE_ALL_HALF * 2), 1);
       o.panel.scale.x = (h * 2) / (GATE_ALL_HALF * 2);
+      o.cover = [o.lane || 0];
     }
   }
   setGateSolid(o, solid, dt) {
@@ -2676,12 +2720,18 @@ class Pools {
         groups[2].visible = false;
       } else if (span === 'wide' && groups.length >= 3) {
         groups[0].visible = false;
-        inst.position.x -= 0.65;
       }
-      return;
     }
-    const ref = HURDLE_REF_WIDTH;
-    if (width > 0.1 && Math.abs(width - ref) > 0.05) inst.scale.x = width / ref;
+    // Scale the *visible* width to the target and center it on the group origin
+    // so the collider (which reads the same bounds) lines up with the mesh.
+    inst.updateWorldMatrix(true, true);
+    const box = localVisibleBox(inst);
+    if (box && width > 0.1) {
+      const visW = box.max.x - box.min.x;
+      const mid = 0.5 * (box.min.x + box.max.x);
+      if (visW > 0.05) inst.scale.x = (inst.scale.x || 1) * (width / visW);
+      inst.position.x -= mid * inst.scale.x;
+    }
   }
 
   buildObs(o, kind, season) {
@@ -2876,6 +2926,13 @@ class Game {
     this.pose = { x: 0, z: 0, yaw: 0, fx: 0, fz: 1, sx: 1, sz: 0 };
     this._deskTilt = 0;
     this._v = new THREE.Vector3();
+
+    this.debugHitbox = false;
+    try { this.debugHitbox = new URLSearchParams(location.search).get('hitbox') === '1'; } catch (e) {}
+    this._hitHelpers = [];
+    this._hitHelperMat = new THREE.LineBasicMaterial({ color: 0xff3a5a, depthTest: false, transparent: true, opacity: 0.95 });
+    this._bodyHelperMat = new THREE.LineBasicMaterial({ color: 0x3ad8ff, depthTest: false, transparent: true, opacity: 0.95 });
+    this._bodyHelper = null;
 
     this._bindUI();
     this._bindInput();
@@ -3615,9 +3672,13 @@ class Game {
   _addGate(z, phase, span, lane = 0) {
     const o = this.pools.obtain(this.pools.gates); if (!o) return;
     o.live = true; o.z = z; o.lane = lane; o.lx = laneX(lane); o.type = 'gate';
-    this.pools.styleGate(o, phase, span);
+    o.span = span === 'all' ? 'all' : 'lane';
+    o.cover = o.span === 'all' ? [-1, 0, 1] : [lane];
+    this.pools.styleGate(o, phase, o.span);
     o.mesh.visible = true;
     this._placeOnPath(o);
+    this._syncHitbox(o);
+    return o;
   }
   _addObs(kind, lane, z, span) {
     const o = this.pools.obtain(this.pools.obs); if (!o) return;
@@ -3635,6 +3696,7 @@ class Game {
     this.pools.buildObs(o, kind, this.season);
     o.mesh.visible = true;
     this._placeOnPath(o);
+    this._syncHitbox(o);
     return o;
   }
   _addHurdle(span, z) {
@@ -3654,6 +3716,7 @@ class Game {
     this.pools.buildObs(o, 'hurdle', this.season);
     o.mesh.visible = true;
     this._placeOnPath(o);
+    this._syncHitbox(o);
     return o;
   }
   _placeOnPath(o) {
@@ -3668,32 +3731,66 @@ class Game {
     if (o.type === 'coin') o.mesh.position.y = COIN_Y + (o.h || 0);
   }
 
+  _syncHitbox(o) {
+    if (!o || !o.mesh) return;
+    const box = localVisibleBox(o.mesh);
+    if (!box) {
+      o.hitHalfX = 0.4;
+      o.hitHalfZ = 0.2;
+      o.hitCx = 0;
+      return;
+    }
+    o.hitHalfX = 0.5 * (box.max.x - box.min.x);
+    o.hitHalfZ = Math.max(0.08, 0.5 * (box.max.z - box.min.z));
+    o.hitCx = 0.5 * (box.max.x + box.min.x);
+  }
+
+  // Obstacle extents used by collides() and the ?hitbox=1 overlay.
+  // Prefer measured visible bounds; fall back to the authored widths for
+  // synthetic test objects that have no mesh.
+  _hitExtents(o) {
+    const fallbackHalf = (o.type === 'gate')
+      ? (o.span === 'all' ? GATE_ALL_HALF : 0.52)
+      : ((o.span === 'all') ? HURDLE_W_ALL * 0.5 : (o.span === 'wide' ? HURDLE_W_WIDE * 0.5 : HURDLE_W_LANE * 0.5));
+    let ox, halfX, halfZ;
+    if (o.hitHalfX != null) {
+      ox = (o.lx != null ? o.lx : laneX(o.lane || 0)) + (o.hitCx || 0);
+      halfX = o.hitHalfX;
+      halfZ = (o.hitHalfZ != null) ? o.hitHalfZ : 0.25;
+    } else if (o.cover && o.cover.length) {
+      const xs = o.cover.map(laneX);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      ox = 0.5 * (minX + maxX);
+      halfX = 0.5 * (maxX - minX) + (o.type === 'gate' ? 0.52 : HURDLE_W_LANE * 0.5);
+      halfZ = 0.35;
+    } else if (o.span === 'all') {
+      ox = 0;
+      halfX = fallbackHalf;
+      halfZ = 0.35;
+    } else {
+      ox = (o.lx != null) ? o.lx : laneX(o.lane || 0);
+      halfX = fallbackHalf;
+      halfZ = 0.35;
+    }
+    return { ox, halfX, halfZ };
+  }
+
   collides(o) {
     if (!o || !o.live || o.taken) return false;
     if (!o.mesh || !o.mesh.visible) return false;
     if (this.offPath) return false;
     if (o.type === 'coin') return false;
-    // Swept path-distance test. The old 0.12–1.05 window was narrower than
-    // one high-speed frame (up to ~1.3 units), so a hit could be missed or
-    // only registered after the runner had already overlapped the prop.
+    // Swept test along the path: the player's slim body volume vs. the
+    // obstacle's real thickness. No fat 1.15-unit bumper in front.
     const prev = (this.prevPz != null) ? this.prevPz : this.pz;
-    const z0 = Math.min(prev, this.pz);
-    const z1 = Math.max(prev, this.pz);
-    const hitNear = o.z - 1.15;
-    const hitFar = o.z + 0.2;
-    if (z1 < hitNear || z0 > hitFar) return false;
-    const px = this.px;
-    if (o.span === 'all' || (o.type === 'gate' && o.span === 'all')) {
-      // full width
-    } else if (o.cover && o.cover.length) {
-      const xs = o.cover.map(laneX);
-      const pad = (o.type === 'gate') ? 0.52 : 0.48;
-      if (px < Math.min(...xs) - pad || px > Math.max(...xs) + pad) return false;
-    } else {
-      const ox = (o.lx != null) ? o.lx : laneX(o.lane || 0);
-      const half = (o.type === 'gate') ? 0.52 : 0.48;
-      if (Math.abs(px - ox) > half) return false;
-    }
+    const ext = this._hitExtents(o);
+    const z0 = Math.min(prev, this.pz) - BODY_Z;
+    const z1 = Math.max(prev, this.pz) + BODY_Z;
+    if (z1 < o.z - ext.halfZ || z0 > o.z + ext.halfZ) return false;
+    // Lateral: visible half-width + slim body, minus a graze margin.
+    // A hit requires more than HIT_FORGIVE of overlap.
+    const reach = ext.halfX + BODY_R - HIT_FORGIVE;
+    if (Math.abs(this.px - ext.ox) > reach) return false;
     if (o.type === 'gate') return o.phase === this.phase;
     if (o.type === 'low' || o.type === 'hurdle') return this.jumpY < (o.clearance != null ? o.clearance : HURDLE_CLEAR);
     if (o.type === 'high') return this.slideT <= 0;
@@ -4074,7 +4171,59 @@ class Game {
     }
   }
 
+  _ensureHitHelpers(n) {
+    const geo = this._hitHelperGeo || (this._hitHelperGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)));
+    while (this._hitHelpers.length < n) {
+      const m = new THREE.LineSegments(geo, this._hitHelperMat);
+      m.frustumCulled = false;
+      m.visible = false;
+      m.renderOrder = 20;
+      this.scene.add(m);
+      this._hitHelpers.push(m);
+    }
+    if (!this._bodyHelper) {
+      this._bodyHelper = new THREE.LineSegments(geo, this._bodyHelperMat);
+      this._bodyHelper.frustumCulled = false;
+      this._bodyHelper.visible = false;
+      this._bodyHelper.renderOrder = 21;
+      this.scene.add(this._bodyHelper);
+    }
+  }
+
+  _syncHitDebug() {
+    if (!this.debugHitbox) return;
+    const live = [];
+    for (const list of [this.pools.obs, this.pools.gates]) {
+      for (const o of list) if (o.live && o.mesh && o.mesh.visible) live.push(o);
+    }
+    this._ensureHitHelpers(live.length);
+    for (let i = 0; i < live.length; i++) {
+      const o = live[i];
+      const ext = this._hitExtents(o);
+      const pose = this.path.resolve(o.z, ext.ox, true);
+      const h = (o.type === 'high') ? 1.7 : (o.type === 'gate' ? 1.7 : (o.height || HURDLE_H));
+      const box = this._hitHelpers[i];
+      box.position.set(pose.x, h * 0.5, pose.z);
+      box.rotation.set(0, pose.yaw, 0);
+      box.scale.set(Math.max(0.08, ext.halfX * 2), Math.max(0.2, h), Math.max(0.08, ext.halfZ * 2));
+      box.visible = true;
+    }
+    for (let i = live.length; i < this._hitHelpers.length; i++) this._hitHelpers[i].visible = false;
+    if (this._bodyHelper && this.penguin && this.penguin.root && this.penguin.root.visible) {
+      const pose = this.path.resolve(this.pz, this.px, true);
+      const by = 0.45 + (this.jumpY || 0);
+      const bh = this.slideT > 0 ? 0.45 : 0.9;
+      this._bodyHelper.position.set(pose.x, by, pose.z);
+      this._bodyHelper.rotation.set(0, pose.yaw, 0);
+      this._bodyHelper.scale.set(BODY_R * 2, bh, BODY_Z * 2);
+      this._bodyHelper.visible = true;
+    } else if (this._bodyHelper) {
+      this._bodyHelper.visible = false;
+    }
+  }
+
   _render() {
+    this._syncHitDebug();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -4142,10 +4291,13 @@ class Game {
       inCornerSafe: z => self._inCornerSafe(z),
       cornerSafeDist: () => self._cornerSafeDist(),
       forestStats: () => self.world.forestStats(),
+      get debugHitbox() { return self.debugHitbox; },
+      hitExtents: o => self._hitExtents(o),
+
       objects() {
         return {
-          gates: self.pools.gates.filter(o => o.live).map(o => ({ type: o.type, z: o.z, phase: o.phase, span: o.span, lane: o.lane, visible: o.mesh.visible })),
-          obs: self.pools.obs.filter(o => o.live).map(o => ({ type: o.type, kind: o.kind, z: o.z, lane: o.lane, span: o.span, cover: o.cover, height: o.height, clearance: o.clearance, visible: o.mesh.visible })),
+          gates: self.pools.gates.filter(o => o.live).map(o => ({ type: o.type, z: o.z, phase: o.phase, span: o.span, lane: o.lane, cover: o.cover, lx: o.lx, hitHalfX: o.hitHalfX, hitHalfZ: o.hitHalfZ, hitCx: o.hitCx, visible: o.mesh.visible })),
+          obs: self.pools.obs.filter(o => o.live).map(o => ({ type: o.type, kind: o.kind, z: o.z, lane: o.lane, span: o.span, cover: o.cover, lx: o.lx, hitHalfX: o.hitHalfX, hitHalfZ: o.hitHalfZ, hitCx: o.hitCx, height: o.height, clearance: o.clearance, visible: o.mesh.visible })),
           coins: self.pools.coins.filter(o => o.live).map(o => ({ z: o.z, lane: o.lane, phase: o.phase }))
         };
       },
