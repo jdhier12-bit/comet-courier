@@ -1,10 +1,10 @@
-// Season Shift v4.9 — SEASON_SHIFT_V4_9
+// Season Shift v5.0 — SEASON_SHIFT_V5_0
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, tilt to steer, swipe to turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_9';
+const VERSION = 'SEASON_SHIFT_V5_0';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -24,17 +24,21 @@ const BLOOM = 0, AURORA = 1;
 const PHASE_NAME = ['BLOOM', 'AURORA'];
 const PHASE_COL = [0xff8fb3, 0x7cffcf];
 const PHASE_COL_B = [0xe85a8c, 0x7b4dff];
-const LANE_W = 1.7; // invisible tracks for coins / partial obstacles only
+const LANE_W = 1.1; // invisible tracks for coins / partial obstacles at ±1.1 and 0
 function laneX(lane) { return -lane * LANE_W; } // +lane is screen-right, negative path-x
 const SPAWN_AHEAD = 72;
-const WARMUP = 36;
+const WARMUP = 22;
 const MAX_DT = 0.05;
-const PATH_W = 6.3;
+const PATH_W = 4.2;
 const TILT_DEADZONE = 3;      // degrees from the calibrated neutral
 const TILT_FULL = 24;         // degrees for max lateral speed
-const STEER_MAX_SPEED = 8.5;  // path units / sec at full tilt or held arrow
+const STEER_MAX_SPEED = 8.0;  // path units / sec at full tilt or held arrow
 const STEER_RESP = 12;        // velocity follow rate (1/s)
-const STEER_EDGE = PATH_W * 0.5 - 0.45; // 2.70, body stays on the dirt
+const STEER_EDGE = PATH_W * 0.5 - 0.38; // 1.72, body stays on the dirt
+const HURDLE_W_ALL = 3.85;
+const HURDLE_W_WIDE = 2.20;
+const HURDLE_W_LANE = 1.05;
+const GATE_ALL_HALF = PATH_W * 0.5 - 0.10; // 2.00
 const STEER_WHOOSH_VX = 6.2;
 const STEER_WHOOSH_CD = 0.45;
 const TILT_TURN_OFF = 8; // leftover hysteresis for the tilt filter only
@@ -149,6 +153,7 @@ window.__SHOP = { UPGRADES, COSTUMES };
 window.__SEASONS = SEASONS;
 window.__PHASE = { BLOOM, AURORA, NAME: PHASE_NAME, COL: PHASE_COL, COL_B: PHASE_COL_B };
 window.__TILT = { DEADZONE: TILT_DEADZONE, FULL: TILT_FULL, MAX_SPEED: STEER_MAX_SPEED, RESP: STEER_RESP, EDGE: STEER_EDGE };
+window.__PATH = { W: PATH_W, LANE: LANE_W, EDGE: STEER_EDGE, WARMUP, CORNER_SAFE_SEC };
 window.__COIN = { SCALE: COIN_SCALE, GAP: COIN_GAP, R: COIN_R, Y: COIN_Y };
 window.__HURDLE = { CLEAR: HURDLE_CLEAR, H: HURDLE_H, CAM_TURN: CAM_TURN_DUR };
 
@@ -417,17 +422,29 @@ function toon(color, extra = {}) {
   }, extra));
 }
 function makePathTexture() {
+  // Even dirt, no edge bands or stripes — those read as confusing "lane lines".
   const c = document.createElement('canvas');
   c.width = 128; c.height = 256;
   const ctx = c.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 128, 0);
-  g.addColorStop(0, '#8a6a3a');
-  g.addColorStop(0.08, '#c9a067');
-  g.addColorStop(0.5, '#d8b57a');
-  g.addColorStop(0.92, '#c9a067');
-  g.addColorStop(1, '#8a6a3a');
-  ctx.fillStyle = g;
+  ctx.fillStyle = '#c9a067';
   ctx.fillRect(0, 0, 128, 256);
+  const img = ctx.getImageData(0, 0, 128, 256);
+  const d = img.data;
+  for (let y = 0; y < 256; y++) {
+    for (let x = 0; x < 128; x++) {
+      // Tileable, very mild grain. No structured longitudinal or transverse bands.
+      const u = (x + 0.5) / 128, v = (y + 0.5) / 256;
+      // Isotropic grain only — no sine bands that would read as stripes down the road.
+      const n = (hash(x * 0.37, y * 0.53) - 0.5) * 0.028
+        + (hash(x * 1.13 + 2.1, y * 0.91) - 0.5) * 0.018;
+      const i = (y * 128 + x) * 4;
+      const k = n * 255;
+      d[i] = clamp(d[i] + k, 0, 255);
+      d[i + 1] = clamp(d[i + 1] + k * 0.92, 0, 255);
+      d[i + 2] = clamp(d[i + 2] + k * 0.75, 0, 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.RepeatWrapping;
@@ -476,28 +493,23 @@ function buildCornerTileGeom(typ) {
     // Miter along z = x, from inner (-half,-half) to outer (half,half).
     topTri(-half, -half, half, -half, half, half);
     topTri(-half, -half, half, half, -half, half);
+    // Walls only on closed sides. Incoming (z=-half) and exit (x=-half) stay open
+    // so a vertical lip cannot show as a line across the joint.
     wall(half, -half, half, half, 1, 0);
     wall(half, half, -half, half, 0, 1);
-    wall(-half, half, -half, -half, -1, 0);
-    wall(-half, -half, half, -half, 0, -1);
   } else if (typ === 'left') {
     // Miter along z = -x, from inner (half,-half) to outer (-half,half).
     topTri(half, -half, -half, -half, -half, half);
     topTri(half, -half, -half, half, half, half);
     wall(-half, -half, -half, half, -1, 0);
     wall(-half, half, half, half, 0, 1);
-    wall(half, half, half, -half, 1, 0);
-    wall(half, -half, -half, -half, 0, -1);
   } else {
     // Tee: south half incoming UVs, north half exit UVs, split on z = 0.
     topTri(-half, -half, half, -half, half, 0);
     topTri(-half, -half, half, 0, -half, 0);
     topTri(-half, 0, half, 0, half, half);
     topTri(-half, 0, half, half, -half, half);
-    wall(-half, -half, -half, half, -1, 0);
-    wall(half, half, half, -half, 1, 0);
     wall(-half, half, half, half, 0, 1);
-    wall(half, -half, -half, -half, 0, -1);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -646,7 +658,7 @@ function geoCache() {
     hood: new THREE.SphereGeometry(0.34, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.52),
     daisy: new THREE.CircleGeometry(0.12, 8),
     streak: new THREE.BoxGeometry(0.03, 0.03, 1.4),
-    pathSlab: new THREE.BoxGeometry(PATH_W, 0.16, 1),
+    pathSlab: new THREE.PlaneGeometry(1, 1),
     cornerSlab: new THREE.BoxGeometry(PATH_W, 0.16, PATH_W),
     curb: new THREE.BoxGeometry(0.22, 0.22, 1),
     wing: new THREE.BoxGeometry(10, 0.08, 1),
@@ -1450,7 +1462,7 @@ class World {
       this.fxBits.push({ mesh: m, life: 0, vx: 0, vy: 0, vz: 0, x: 0, y: 0, z: 0 });
     }
 
-    this.pathMat = std(0xc9a067, { roughness: 0.72, map: pathTex() });
+    this.pathMat = std(0xc9a067, { roughness: 0.9, map: pathTex() });
     this.pathMat.map.repeat.set(1, 1);
     this.curbMat = std(0x8a6230, { roughness: 0.7 });
     this.dashMat = makeDashMat();
@@ -1615,7 +1627,7 @@ class World {
 
   _pathMatFor(season) {
     const s = SEASONS[season];
-    if (!this.pathMat) this.pathMat = std(s.path, { roughness: 0.72, map: pathTex() });
+    if (!this.pathMat) this.pathMat = std(s.path, { roughness: 0.9, map: pathTex() });
     this.pathMat.color.setHex(s.path);
     this.curbMat.color.setHex(s.pathDark);
     return this.pathMat;
@@ -1634,33 +1646,34 @@ class World {
     g.userData.sig = sig;
     const mat = this._pathMatFor(season);
     const half = PATH_W * 0.5;
-    const seam = 0.02; // tiny overlap so precision cannot open a gap; UVs/shader match so it will not z-fight
     if (seg.type === 'straight') {
-      // Dirt slab and curbs stop at the edge of the corner square so markings
-      // do not overrun the junction. The corner tile takes over from there.
+      // Dirt plane and curbs stop exactly at the corner square. No overlap, so
+      // coplanar faces cannot z-fight a hairline across the joint.
       let slabLen = Math.max(0.2, seg.length);
       let slabZ = 0;
-      if (seg.cap0 === 'corner') { const cut = half - seam; slabLen -= cut; slabZ += cut * 0.5; }
-      if (seg.cap1 === 'corner') { const cut = half - seam; slabLen -= cut; slabZ -= cut * 0.5; }
+      if (seg.cap0 === 'corner') { slabLen -= half; slabZ += half * 0.5; }
+      if (seg.cap1 === 'corner') { slabLen -= half; slabZ -= half * 0.5; }
       slabLen = Math.max(0.2, slabLen);
       const slab = new THREE.Mesh(this.geo.pathSlab, mat);
-      slab.scale.z = slabLen;
-      slab.position.set(0, 0.02, slabZ);
+      slab.rotation.x = -Math.PI / 2;
+      slab.scale.set(PATH_W, slabLen, 1);
+      slab.position.set(0, 0.10, slabZ);
       slab.receiveShadow = true;
       slab.castShadow = false;
       g.add(slab);
       let curbLen = seg.length;
       let curbZ = 0;
-      const cut = half - 0.02;
-      if (seg.cap0 === 'corner') { curbLen -= cut; curbZ += cut * 0.5; }
-      if (seg.cap1 === 'corner') { curbLen -= cut; curbZ -= cut * 0.5; }
+      if (seg.cap0 === 'corner') { curbLen -= half; curbZ += half * 0.5; }
+      if (seg.cap1 === 'corner') { curbLen -= half; curbZ -= half * 0.5; }
       curbLen = Math.max(0.2, curbLen);
       const curbL = new THREE.Mesh(this.geo.curb, this.curbMat);
       const curbR = new THREE.Mesh(this.geo.curb, this.curbMat);
       curbL.scale.z = curbR.scale.z = curbLen;
       curbL.position.set(-PATH_W * 0.5, 0.12, curbZ);
       curbR.position.set(PATH_W * 0.5, 0.12, curbZ);
-      curbL.castShadow = curbR.castShadow = true;
+      // Curbs do not cast shadows — a thin shadow along the dirt read as a line.
+      curbL.castShadow = curbR.castShadow = false;
+      curbL.receiveShadow = curbR.receiveShadow = false;
       g.add(curbL, curbR);
       const mid = poseAtStraight(seg, (seg.dist0 + seg.dist1) * 0.5, 0);
       g.position.set(mid.x, 0, mid.z);
@@ -1671,7 +1684,7 @@ class World {
       // 90°; only the camera yaw still curves around the sharp gameplay snap.
       const typ = (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') ? seg.type : 'right';
       const tile = new THREE.Mesh(buildCornerTileGeom(typ), mat);
-      tile.position.y = 0.02;
+      tile.position.y = 0.021; // 1mm above the straight plane, kills joint z-fight
       tile.receiveShadow = true;
       tile.castShadow = false;
       g.add(tile);
@@ -1682,7 +1695,8 @@ class World {
       for (const e of edges) {
         const c = new THREE.Mesh(this.geo.curb, this.curbMat);
         c.scale.z = PATH_W;
-        c.castShadow = true;
+        c.castShadow = false;
+        c.receiveShadow = false;
         if (e === 'fwd') { c.position.set(0, 0.12, half); c.rotation.y = Math.PI / 2; }
         else if (e === 'left') { c.position.set(-half, 0.12, 0); }
         else { c.position.set(half, 0.12, 0); }
@@ -1693,7 +1707,8 @@ class World {
         const k = new THREE.Mesh(this.geo.box, this.curbMat);
         k.scale.set(0.22, 0.22, 0.22);
         k.position.set(x, 0.12, z);
-        k.castShadow = true;
+        k.castShadow = false;
+        k.receiveShadow = false;
         g.add(k);
       };
       if (typ === 'right') { cap(half, half); cap(-half, -half); }
@@ -1725,6 +1740,7 @@ class World {
   }
 
   _paintLaneMarks(g, seg, path) {
+    return; // v5.0: no painted dashes or corner arcs on the road
     const pos = [], nor = [];
     const half = PATH_W * 0.5;
     const mid = (seg.dist0 + seg.dist1) * 0.5;
@@ -2041,9 +2057,9 @@ class Pools {
     this.obs = [];
     this._hurdleTpl = [null, null, null, null];
     this.hurdlesReady = false;
-    for (let i = 0; i < 48; i++) this.coins.push(this._coin());
-    for (let i = 0; i < 8; i++) this.gates.push(this._gate());
-    for (let i = 0; i < 28; i++) this.obs.push(this._obs());
+    for (let i = 0; i < 72; i++) this.coins.push(this._coin());
+    for (let i = 0; i < 16; i++) this.gates.push(this._gate());
+    for (let i = 0; i < 56; i++) this.obs.push(this._obs());
   }
   _coin() {
     const g = new THREE.Group();
@@ -2070,15 +2086,15 @@ class Pools {
   _gate() {
     const g = new THREE.Group();
     const pillarGeo = new THREE.CapsuleGeometry(0.22, 1.45, 6, 12);
-    const beamGeo = new THREE.CapsuleGeometry(0.16, 5.7, 6, 10);
-    const panelGeo = new THREE.BoxGeometry(5.7, 1.55, 0.05);
+    const beamGeo = new THREE.CapsuleGeometry(0.16, GATE_ALL_HALF * 2, 6, 10);
+    const panelGeo = new THREE.BoxGeometry(GATE_ALL_HALF * 2, 1.55, 0.05);
     const mSolid = std(0xff8fb3, { roughness: 0.32, emissive: 0xff8fb3, emissiveIntensity: 0.45, transparent: true, opacity: 0.48, depthWrite: false });
     const mFrame = std(0xff8fb3, { roughness: 0.32, emissive: 0xe85a8c, emissiveIntensity: 0.4 });
-    const left = new THREE.Mesh(pillarGeo, mFrame); left.position.set(-3.0, 0.95, 0); left.castShadow = true;
-    const right = new THREE.Mesh(pillarGeo, mFrame); right.position.set(3.0, 0.95, 0); right.castShadow = true;
+    const left = new THREE.Mesh(pillarGeo, mFrame); left.position.set(-GATE_ALL_HALF, 0.95, 0); left.castShadow = true;
+    const right = new THREE.Mesh(pillarGeo, mFrame); right.position.set(GATE_ALL_HALF, 0.95, 0); right.castShadow = true;
     const top = new THREE.Mesh(beamGeo, mFrame); top.position.set(0, 1.82, 0); top.rotation.z = Math.PI / 2;
-    const capL = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), mFrame); capL.position.set(-3.0, 1.82, 0);
-    const capR = capL.clone(); capR.position.x = 3.0;
+    const capL = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), mFrame); capL.position.set(-GATE_ALL_HALF, 1.82, 0);
+    const capR = capL.clone(); capR.position.x = GATE_ALL_HALF;
     const panel = new THREE.Mesh(panelGeo, mSolid); panel.position.set(0, 0.95, 0);
     const bloom = makeBloomEmblem(); bloom.position.set(0, 1.05, 0.14); bloom.scale.setScalar(1.45);
     const aurora = makeAuroraEmblem(); aurora.position.set(0, 1.05, 0.14); aurora.scale.setScalar(1.45);
@@ -2114,17 +2130,18 @@ class Pools {
     o.bloom.visible = phase === BLOOM;
     o.aurora.visible = phase === AURORA;
     if (span === 'all') {
-      o.left.position.x = -3.0; o.right.position.x = 3.0;
-      if (o.capL) o.capL.position.x = -3.0;
-      if (o.capR) o.capR.position.x = 3.0;
+      o.left.position.x = -GATE_ALL_HALF; o.right.position.x = GATE_ALL_HALF;
+      if (o.capL) o.capL.position.x = -GATE_ALL_HALF;
+      if (o.capR) o.capR.position.x = GATE_ALL_HALF;
       o.top.scale.x = 1;
       o.panel.scale.x = 1;
     } else {
-      o.left.position.x = -0.7; o.right.position.x = 0.7;
-      if (o.capL) o.capL.position.x = -0.7;
-      if (o.capR) o.capR.position.x = 0.7;
-      o.top.scale.x = 0.28;
-      o.panel.scale.x = 0.24;
+      const h = 0.52;
+      o.left.position.x = -h; o.right.position.x = h;
+      if (o.capL) o.capL.position.x = -h;
+      if (o.capR) o.capR.position.x = h;
+      o.top.scale.x = (h * 2) / (GATE_ALL_HALF * 2);
+      o.panel.scale.x = (h * 2) / (GATE_ALL_HALF * 2);
     }
   }
   setGateSolid(o, solid, dt) {
@@ -2165,7 +2182,7 @@ class Pools {
         groups[2].visible = false;
       } else if (span === 'wide' && groups.length >= 3) {
         groups[0].visible = false;
-        inst.position.x -= 1.0;
+        inst.position.x -= 0.65;
       }
       return;
     }
@@ -2182,13 +2199,16 @@ class Pools {
       o.type = 'high';
       o.height = 1.7;
       o.clearance = 0;
+      const span = o.span || 'lane';
+      const half = span === 'all' ? (HURDLE_W_ALL * 0.5) : (span === 'wide' ? (HURDLE_W_WIDE * 0.5) : (HURDLE_W_LANE * 0.5));
+      const barLen = Math.max(0.4, half * 2 - 0.12);
       const postM = std(0x5a4630, { roughness: 0.65 });
       const barC = [0xff8fb3, 0x4ec4d6, 0xff7a2a, 0x9fe8ff][season];
       const p1 = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 1.55, 5, 10), postM);
       const p2 = p1.clone();
-      p1.position.set(-0.78, 0.9, 0); p2.position.set(0.78, 0.9, 0);
+      p1.position.set(-half, 0.9, 0); p2.position.set(half, 0.9, 0);
       p1.castShadow = true; p2.castShadow = true;
-      const bar = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 1.45, 5, 10), std(barC, { emissive: barC, emissiveIntensity: 0.4 }));
+      const bar = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, barLen, 5, 10), std(barC, { emissive: barC, emissiveIntensity: 0.4 }));
       bar.rotation.z = Math.PI / 2; bar.position.y = 0.95; bar.castShadow = true;
       const bar2 = bar.clone(); bar2.position.y = 1.42;
       mesh.add(p1, p2, bar, bar2);
@@ -2198,7 +2218,7 @@ class Pools {
       o.height = HURDLE_H;
       o.clearance = HURDLE_CLEAR;
       const span = o.span || 'lane';
-      const width = span === 'all' ? 5.5 : (span === 'wide' ? 3.35 : 1.55);
+      const width = span === 'all' ? HURDLE_W_ALL : (span === 'wide' ? HURDLE_W_WIDE : HURDLE_W_LANE);
       const tpl = this._hurdleTpl[season];
       if (tpl) {
         const inst = tpl.clone(true);
@@ -2887,8 +2907,8 @@ class Game {
     return Math.min(base + terrace, 26.5) + pulse;
   }
   _gap() {
-    const u = clamp(this.elapsed / 80, 0, 1);
-    return lerp(16.5, 9.2, u * u * 0.35 + u * 0.65);
+    // ~0.55s between rows so almost every row can hold a hazard (about 3x v4.9).
+    return Math.max(5.4, 0.55 * this.speed);
   }
   _formUI() {
     this.$.form.textContent = PHASE_NAME[this.phase];
@@ -2967,74 +2987,85 @@ class Game {
     }
   }
   _hazardGap() {
-    return Math.max(8.5, 0.85 * this.speed);
+    // Side blockers can sit on consecutive rows (~0.55s). Always a reachable dodge.
+    return Math.max(5.4, 0.55 * this.speed);
   }
   _hurdleGap() {
     const u = clamp((this.speed - 10.5) / 16, 0, 1);
-    // ~2.7s between jumps at the start, tightening to ~1.5s as speed climbs.
-    return lerp(2.15, 1.35, u) * this.speed;
+    // Full/wide jumps every ~0.95s at the start, tightening to ~0.78s.
+    return lerp(0.95, 0.78, u) * this.speed;
   }
   _spawnRow(z) {
     this.rowCount++;
     const t = this.elapsed;
     const r = Math.random();
-    const lanes = [-1, 0, 1];
+    const tracks = [-1, 0, 1];
+    const coinOn = (avoid, n, off) => {
+      const free = tracks.filter(tr => !(avoid || []).includes(tr));
+      this._addCoinLine(free.length ? free[irand(free.length)] : 0, z + (off || 2), n);
+    };
     if (this._inCornerSafe(z)) {
-      this._addCoinLine(lanes[irand(3)], z, 4);
+      this._addCoinLine(tracks[irand(3)], z, 4);
       return;
     }
     const sinceH = z - (this.lastHurdleZ || 0);
     const sinceHaz = z - (this.lastHazardZ || 0);
     const hazOk = sinceHaz >= this._hazardGap();
     const hurdleDue = sinceH >= this._hurdleGap() && hazOk;
-    if (hurdleDue && r < 0.9) {
-      if (Math.random() < 0.55) this._addHurdle('all', z);
+    if (!hazOk) {
+      this._addCoinLine(tracks[irand(3)], z, 3);
+      return;
+    }
+    // Almost every legal row is a real hazard: jump, slide, or a side blocker
+    // with a reachable gap. Full-width jumps stay on their own slightly longer beat.
+    if (hurdleDue && r < 0.88) {
+      if (Math.random() < 0.5) this._addHurdle('all', z);
       else {
         const a = irand(2);
         this._addHurdle([a - 1, a], z);
       }
       this.lastHurdleZ = z;
       this.lastHazardZ = z;
-      if (Math.random() < 0.45) this._addCoinLine(lanes[irand(3)], z + 4, 3);
+      coinOn(null, 3, 3);
       return;
     }
-    const gateChance = t < 5 ? 0 : Math.min(0.12 + t * 0.0055, 0.36);
-    const minGate = t < 8 ? 5 : (t < 25 ? 4 : 3);
-    if (hazOk && r < gateChance && this.rowCount - this.lastGate >= minGate) {
+    const gateChance = t < 3 ? 0.12 : Math.min(0.18 + t * 0.006, 0.34);
+    const minGate = t < 8 ? 4 : 3;
+    if (Math.random() < gateChance && this.rowCount - this.lastGate >= minGate) {
       this.lastGate = this.rowCount;
       this.lastHazardZ = z;
-      const ph = Math.random() < 0.62 ? this.phase : this.phase ^ 1;
-      this._addGate(z, ph, 'all');
-      const cl = lanes[irand(3)];
-      this._addCoinLine(cl, z + 5, 4);
+      if (Math.random() < 0.55) {
+        const ph = Math.random() < 0.55 ? this.phase : this.phase ^ 1;
+        this._addGate(z, ph, 'all');
+        coinOn(null, 3, 4);
+      } else {
+        const sh = tracks.slice().sort(() => Math.random() - 0.5);
+        const take = Math.random() < 0.45 ? 2 : 1;
+        for (let i = 0; i < take; i++) this._addGate(z, Math.random() < 0.5 ? 0 : 1, 'lane', sh[i]);
+        coinOn(sh.slice(0, take), 3, 3);
+      }
       return;
     }
-    if (hazOk && r < gateChance + 0.12 && t > 10 && this.rowCount - this.lastGate >= 2) {
-      this.lastGate = this.rowCount;
+    // Side blockers and slide-unders. Never close every track unless the
+    // action is a single full-width slide.
+    const sh = tracks.slice().sort(() => Math.random() - 0.5);
+    const roll = Math.random();
+    if (roll < 0.28) {
+      this._addObs('high', 0, z, 'all');
       this.lastHazardZ = z;
-      const take = 1 + (Math.random() < Math.min(0.2 + t * 0.01, 0.7) ? 1 : 0);
-      const sh = lanes.slice().sort(() => Math.random() - 0.5);
-      for (let i = 0; i < take; i++) this._addGate(z, Math.random() < 0.5 ? 0 : 1, 'lane', sh[i]);
-      this._addCoinLine(sh[take] ?? 0, z + 3, 3);
+      coinOn(null, 3, 3);
       return;
     }
-    if (r > 0.88) {
-      const l = lanes[irand(3)];
-      this._addCoinLine(l, z, 5);
+    if (roll < 0.50) {
+      this._addObs('high', sh[0], z);
+      this.lastHazardZ = z;
+      coinOn([sh[0]], 3, 2);
       return;
     }
-    if (!hazOk) {
-      this._addCoinLine(lanes[irand(3)], z, 3);
-      return;
-    }
-    const n = Math.random() < Math.min(0.22 + t * 0.01, 0.7) ? 2 : 1;
-    const sh = lanes.slice().sort(() => Math.random() - 0.5);
-    for (let i = 0; i < n; i++) {
-      const typ = Math.random() < 0.62 ? 'low' : 'high';
-      this._addObs(typ, sh[i], z);
-    }
+    const n = Math.random() < 0.55 ? 2 : 1;
+    for (let i = 0; i < n; i++) this._addObs('low', sh[i], z);
     this.lastHazardZ = z;
-    if (Math.random() < 0.7) this._addCoinLine(sh[n] ?? 0, z + 2, 3);
+    coinOn(sh.slice(0, n), 3, 2);
   }
   _nextCoinZ(lane, z) {
     const gap = COIN_GAP;
@@ -3079,13 +3110,23 @@ class Game {
     o.mesh.visible = true;
     this._placeOnPath(o);
   }
-  _addObs(kind, lane, z) {
+  _addObs(kind, lane, z, span) {
     const o = this.pools.obtain(this.pools.obs); if (!o) return;
-    o.live = true; o.lane = lane; o.lx = laneX(lane); o.z = z; o.type = kind; o.nearMissed = false;
-    o.span = 'lane'; o.cover = [lane];
+    let cover, mid, kindSpan;
+    if (span === 'all') { cover = [-1, 0, 1]; mid = 0; kindSpan = 'all'; }
+    else if (Array.isArray(span)) {
+      cover = span.slice().sort((a, b) => a - b);
+      mid = cover.reduce((a, b) => a + b, 0) / cover.length;
+      kindSpan = cover.length >= 2 ? 'wide' : 'lane';
+    } else {
+      cover = [lane]; mid = lane; kindSpan = 'lane';
+    }
+    o.live = true; o.lane = mid; o.lx = laneX(mid); o.z = z; o.type = kind; o.nearMissed = false;
+    o.span = kindSpan; o.cover = cover;
     this.pools.buildObs(o, kind, this.season);
     o.mesh.visible = true;
     this._placeOnPath(o);
+    return o;
   }
   _addHurdle(span, z) {
     const o = this.pools.obtain(this.pools.obs); if (!o) return;
@@ -3137,11 +3178,11 @@ class Game {
       // full width
     } else if (o.cover && o.cover.length) {
       const xs = o.cover.map(laneX);
-      const pad = (o.type === 'gate') ? 0.75 : 0.7;
+      const pad = (o.type === 'gate') ? 0.52 : 0.48;
       if (px < Math.min(...xs) - pad || px > Math.max(...xs) + pad) return false;
     } else {
       const ox = (o.lx != null) ? o.lx : laneX(o.lane || 0);
-      const half = (o.type === 'gate') ? 0.75 : 0.62;
+      const half = (o.type === 'gate') ? 0.52 : 0.48;
       if (Math.abs(px - ox) > half) return false;
     }
     if (o.type === 'gate') return o.phase === this.phase;
@@ -3480,11 +3521,11 @@ class Game {
     let dist, height, lookAhead, lookY, fov;
     if (home) {
       // Scenic chase view down the empty season path. The panda is hidden here.
-      dist = 7.2; height = 3.6; lookAhead = 18; lookY = 0.7; fov = 54;
+      dist = 6.4; height = 3.2; lookAhead = 14; lookY = 0.7; fov = 54;
     } else {
-      dist = 5.8 - speedK * 0.45;
-      height = 2.25 + speedK * 0.15;
-      lookAhead = 7.2;
+      dist = 5.3 - speedK * 0.35;
+      height = 2.12 + speedK * 0.12;
+      lookAhead = 6.5;
       lookY = 0.45 + Math.max(0, this.jumpY) * 0.2;
       fov = 52 + speedK * 8 + this.fovKick;
     }
