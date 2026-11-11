@@ -1,10 +1,10 @@
-// Season Shift v4.8 — SEASON_SHIFT_V4_8
+// Season Shift v4.9 — SEASON_SHIFT_V4_9
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
-// Path corners / T-junctions, swipe lanes, tilt turns, Bloom/Aurora theme.
+// Path corners / T-junctions, tilt to steer, swipe to turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_8';
+const VERSION = 'SEASON_SHIFT_V4_9';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -24,19 +24,20 @@ const BLOOM = 0, AURORA = 1;
 const PHASE_NAME = ['BLOOM', 'AURORA'];
 const PHASE_COL = [0xff8fb3, 0x7cffcf];
 const PHASE_COL_B = [0xe85a8c, 0x7b4dff];
-const LANE_W = 1.7;
-function laneX(lane) { return -lane * LANE_W; }
+const LANE_W = 1.7; // invisible tracks for coins / partial obstacles only
+function laneX(lane) { return -lane * LANE_W; } // +lane is screen-right, negative path-x
 const SPAWN_AHEAD = 72;
 const WARMUP = 36;
 const MAX_DT = 0.05;
 const PATH_W = 6.3;
-const TILT_TURN_ON = 18;   // degrees of gamma from the calibrated neutral
-const TILT_TURN_OFF = 8;   // re-arm hysteresis so one tilt cannot double-turn
-const DASH_LEN = 0.70;
-const DASH_GAP = 0.62;
-const DASH_W = 0.09;
-const DASH_Y = 0.115;
-const LANE_MARKS = [-1.5 * LANE_W, -0.5 * LANE_W, 0.5 * LANE_W, 1.5 * LANE_W];
+const TILT_DEADZONE = 3;      // degrees from the calibrated neutral
+const TILT_FULL = 24;         // degrees for max lateral speed
+const STEER_MAX_SPEED = 8.5;  // path units / sec at full tilt or held arrow
+const STEER_RESP = 12;        // velocity follow rate (1/s)
+const STEER_EDGE = PATH_W * 0.5 - 0.45; // 2.70, body stays on the dirt
+const STEER_WHOOSH_VX = 6.2;
+const STEER_WHOOSH_CD = 0.45;
+const TILT_TURN_OFF = 8; // leftover hysteresis for the tilt filter only
 const CORNER_SAFE_SEC = 1.75; // no obstacles/gates for this many seconds after a corner
 const COIN_SCALE = 0.63;       // visual size vs. the original 0.26-radius coins
 const COIN_R = 0.26 * COIN_SCALE;
@@ -77,7 +78,7 @@ const SEASONS = [
 ];
 
 const UPGRADES = [
-  { id: 'magnet',      name: 'Coin Magnet',  blurb: 'Pulls nearby coins into your lane.',  prices: [50, 120, 250, 500, 900] },
+  { id: 'magnet',      name: 'Coin Magnet',  blurb: 'Pulls nearby coins toward you.',  prices: [50, 120, 250, 500, 900] },
   { id: 'shield',      name: 'Trail Shield', blurb: 'Start each run with extra hit shields.', prices: [80, 180, 350, 700, 1200] },
   { id: 'doubleCoins', name: 'Double Coins', blurb: 'Coins from a run are worth more.',     prices: [100, 250, 500, 1000, 2000] },
   { id: 'headStart',   name: 'Head Start',   blurb: 'Begin each run already up to speed.',  prices: [60, 150, 300, 600, 1100] },
@@ -147,7 +148,7 @@ window.__VERSION = VERSION;
 window.__SHOP = { UPGRADES, COSTUMES };
 window.__SEASONS = SEASONS;
 window.__PHASE = { BLOOM, AURORA, NAME: PHASE_NAME, COL: PHASE_COL, COL_B: PHASE_COL_B };
-window.__TILT = { ON: TILT_TURN_ON, OFF: TILT_TURN_OFF };
+window.__TILT = { DEADZONE: TILT_DEADZONE, FULL: TILT_FULL, MAX_SPEED: STEER_MAX_SPEED, RESP: STEER_RESP, EDGE: STEER_EDGE };
 window.__COIN = { SCALE: COIN_SCALE, GAP: COIN_GAP, R: COIN_R, Y: COIN_Y };
 window.__HURDLE = { CLEAR: HURDLE_CLEAR, H: HURDLE_H, CAM_TURN: CAM_TURN_DUR };
 
@@ -287,6 +288,7 @@ const Sfx = {
   },
   slide() { this.whoosh(0.2, 0.22, 1000, 180); this.tone(340, 140, 0.16, 'sine', 0.06); },
   lane() { this.whoosh(0.1, 0.18, 700, 1200); this.tone(520, 640, 0.06, 'sine', 0.055); },
+  steerWhoosh() { this.whoosh(0.12, 0.08, 520, 1080); },
   turn() { this.whoosh(0.16, 0.26, 500, 1400); this.tone(440, 660, 0.1, 'sine', 0.08); },
   nearMiss() { this.whoosh(0.14, 0.2, 1200, 400); this.tone(880, 440, 0.08, 'triangle', 0.06); },
   step() {
@@ -1666,7 +1668,7 @@ class World {
     } else {
       // One continuous corner piece (mitered UVs so the dirt reads as the same
       // road as the incoming and outgoing slabs). Gameplay heading still snaps
-      // 90°; only the painted lane lines and the camera yaw curve/swing.
+      // 90°; only the camera yaw still curves around the sharp gameplay snap.
       const typ = (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') ? seg.type : 'right';
       const tile = new THREE.Mesh(buildCornerTileGeom(typ), mat);
       tile.position.y = 0.02;
@@ -1700,7 +1702,6 @@ class World {
       g.position.set(seg.x0, 0, seg.z0);
       g.rotation.y = seg.yaw0;
     }
-    this._paintLaneMarks(g, seg, path);
     this.pathG.add(g);
     this._segMeshes.set(seg.id, g);
     return g;
@@ -1836,7 +1837,7 @@ class World {
 
   _syncChevrons(path) {
     // v4.7: no painted arrows / chevrons on the road. The only turn hint is the
-    // "Tilt to turn" toast on the first corner.
+    // "Swipe to turn" toast on the first corner.
     for (const c of this.chevL) this.pathG.remove(c);
     for (const c of this.chevR) this.pathG.remove(c);
     this.chevL.length = 0; this.chevR.length = 0;
@@ -2243,7 +2244,7 @@ class TiltSteer {
       if (ev.gamma == null) return;
       this.hasDevice = true;
       this._lastEvt = performance.now();
-      // Portrait: gamma is left/right tilt. A right tilt (positive gamma) is a right turn.
+      // Portrait: gamma is left/right tilt. A right tilt (positive gamma) steers right.
       this.raw = ev.gamma;
       if (!this.calibrated) { this.neutral = this.raw; this.calibrated = true; }
     });
@@ -2278,9 +2279,17 @@ class TiltSteer {
     const f = this.angle();
     if (!this.live()) return 0;
     if (!this.armed) return 0;
-    if (f >= TILT_TURN_ON) { this.armed = false; return 1; }
-    if (f <= -TILT_TURN_ON) { this.armed = false; return -1; }
+    if (f >= TILT_FULL) { this.armed = false; return 1; }
+    if (f <= -TILT_FULL) { this.armed = false; return -1; }
     return 0;
+  }
+  // Analog steer in [-1, 1]. +1 is player-right (screen-right).
+  steerAmt() {
+    const f = this.angle();
+    if (!this.live()) return 0;
+    const mag = Math.abs(f);
+    if (mag <= TILT_DEADZONE) return 0;
+    return Math.sign(f) * clamp((mag - TILT_DEADZONE) / (TILT_FULL - TILT_DEADZONE), 0, 1);
   }
 }
 
@@ -2327,7 +2336,7 @@ class Game {
       this.streaks.push({ mesh: m, x: 0, y: 0, z: 0 });
     }
 
-    this.lane = 0; this.px = 0; this.pz = 0;
+    this.lane = 0; this.px = 0; this.pxVel = 0; this.pz = 0;
     this.wx = 0; this.wz = 0; this.yaw = 0;
     this.jumpY = 0; this.jumpV = 0; this.slideT = 0;
     this.phase = BLOOM; this.phaseCd = 0;
@@ -2347,6 +2356,8 @@ class Game {
     this.homeOff = 0;
     this.toastT = 0;
     this.turnBuf = 0; this.turnBufT = 0;
+    this._keySteerL = false; this._keySteerR = false;
+    this._steerWhooshT = 0;
     this.offPath = false;
     this.pose = { x: 0, z: 0, yaw: 0, fx: 0, fz: 1, sx: 1, sz: 0 };
     this._deskTilt = 0;
@@ -2451,7 +2462,7 @@ class Game {
       }
       if (this.state !== 'play') return;
       const horiz = Math.abs(dx) > Math.abs(dy);
-      // Dominant axis. A short horizontal swipe is a lane change, never a tap.
+      // Dominant axis. A short horizontal swipe is a turn, never a tap.
       if (horiz && Math.abs(dx) >= 24) {
         this.sw.done = true; this._swipe(dx, dy);
         return;
@@ -2516,32 +2527,34 @@ class Game {
         return;
       }
       if (this.state !== 'play') return;
-      if (k === 'ArrowLeft') this.move(-1);
-      else if (k === 'ArrowRight') this.move(1);
+      if (k === 'ArrowLeft') { this._keySteerL = true; e.preventDefault(); }
+      else if (k === 'ArrowRight') { this._keySteerR = true; e.preventDefault(); }
       else if (k === 'KeyA' || k === 'KeyQ' || k === 'Comma') this.turn(-1);
       else if (k === 'KeyD' || k === 'KeyE' || k === 'Period') this.turn(1);
       else if (k === 'ArrowUp' || k === 'KeyW') this.jump();
       else if (k === 'ArrowDown' || k === 'KeyS') this.slide();
       else if (k === 'Space' || k === 'ShiftLeft' || k === 'ShiftRight') this.togglePhase();
     });
+    window.addEventListener('keyup', e => {
+      const k = e.code;
+      if (k === 'ArrowLeft') this._keySteerL = false;
+      else if (k === 'ArrowRight') this._keySteerR = false;
+    });
+    window.addEventListener('blur', () => { this._keySteerL = false; this._keySteerR = false; });
     document.addEventListener('gesturestart', e => e.preventDefault());
   }
 
   _swipe(dx, dy) {
     this.lastInput = { type: 'swipe', dx, dy, state: this.state };
     if (this.state !== 'play') return;
-    if (Math.abs(dx) > Math.abs(dy)) this.move(dx > 0 ? 1 : -1);
+    if (Math.abs(dx) > Math.abs(dy)) this.turn(dx > 0 ? 1 : -1);
     else if (dy < 0) this.jump(); else this.slide();
   }
   _tap() {
     if (this.state === 'play') this.togglePhase();
   }
   move(d, fromTilt = false) {
-    const n = clamp(this.lane + d, -1, 1);
-    if (n !== this.lane) {
-      this.lane = n;
-      Sfx.lane();
-    }
+    // Lanes are gone. Kept as a no-op so leftover callers cannot snap the panda.
   }
   turn(dir) {
     if (this.state !== 'play' || this.offPath) return;
@@ -2572,9 +2585,8 @@ class Game {
   }
 
   _turnWindow(speed) {
-    // Slightly wider than the old swipe window so a tilt has time to register,
-    // still scaling with speed so the time window stays about half a second.
-    return { before: Math.max(3.6, 0.48 * speed), after: Math.max(1.35, 0.18 * speed) };
+    // Earlier swipe-to-turn window (~half a second), restored now that tilt no longer turns.
+    return { before: Math.max(2.8, 0.38 * speed), after: Math.max(1.05, 0.14 * speed) };
   }
   _tryConsumeTurn() {
     const p = this.path.pending;
@@ -2679,7 +2691,7 @@ class Game {
       this._hideCount();
       this.state = 'play';
       this.tilt.calibrate();
-      this.toast('Swipe to move  ·  Tilt to turn  ·  Tap to shift', 2.2);
+      this.toast('Tilt to steer · Swipe to turn', 2.2);
       return;
     }
     if (idx !== this._countShown) {
@@ -2700,7 +2712,7 @@ class Game {
     this.state = 'home';
     this._hideCount();
     this.homeOff = 0;
-    this.pz = 0; this.px = 0; this.lane = 0;
+    this.pz = 0; this.px = 0; this.pxVel = 0; this.lane = 0;
     this.wx = 0; this.wz = 0; this.yaw = 0;
     this.camYaw = 0;
     this.jumpY = 0; this.jumpV = 0; this.slideT = 0;
@@ -2811,7 +2823,7 @@ class Game {
     this._hideCount();
     this.music.play(this.season, false);
     this.pools.releaseAll();
-    this.lane = 0; this.px = 0; this.pz = 0;
+    this.lane = 0; this.px = 0; this.pxVel = 0; this.pz = 0;
     this.wx = 0; this.wz = 0; this.yaw = 0;
     this.camYaw = 0;
     this.jumpY = 0; this.jumpV = 0; this.slideT = 0;
@@ -2851,12 +2863,14 @@ class Game {
     this.camTilt = 0;
     if (this.penguin && this.penguin.hop) this.penguin.hop.rotation.set(0, 0, 0);
     this.penguin.root.visible = true;
-    this._tiltHintShown = false;
+    this._turnHintShown = false;
+    this._keySteerL = false; this._keySteerR = false;
+    this._steerWhooshT = 0;
     this.frozen = false;
     this.tilt.calibrate();
     if (skipCount) {
       this.state = 'play';
-      this.toast('Swipe to move  ·  Tilt to turn  ·  Tap to shift', 2.2);
+      this.toast('Tilt to steer · Swipe to turn', 2.2);
     } else {
       this.state = 'countdown';
       this.countT = 3.2;
@@ -2893,21 +2907,41 @@ class Game {
     this.toastT = dur;
   }
 
-  _tickTiltTurn() {
+  _steerLateral(dt, playing) {
+    const canSteer = playing && !this.frozen && !this.offPath && this.state === 'play';
+    if (!canSteer) {
+      this.pxVel = 0;
+      this.lean += (0 - this.lean) * Math.min(1, 8 * dt);
+      return;
+    }
+    const key = (this._keySteerR ? 1 : 0) + (this._keySteerL ? -1 : 0);
+    const input = key !== 0 ? clamp(key, -1, 1) : this.tilt.steerAmt();
+    // +input is player-right; path-x is mirrored (laneX(1) is negative).
+    const targetV = -input * STEER_MAX_SPEED;
+    const k = 1 - Math.exp(-STEER_RESP * dt);
+    this.pxVel += (targetV - this.pxVel) * k;
+    this.px += this.pxVel * dt;
+    if (this.px > STEER_EDGE) { this.px = STEER_EDGE; if (this.pxVel > 0) this.pxVel = 0; }
+    else if (this.px < -STEER_EDGE) { this.px = -STEER_EDGE; if (this.pxVel < 0) this.pxVel = 0; }
+    this._steerWhooshT = Math.max(0, (this._steerWhooshT || 0) - dt);
+    if (Math.abs(this.pxVel) >= STEER_WHOOSH_VX && this._steerWhooshT <= 0) {
+      Sfx.steerWhoosh();
+      this._steerWhooshT = STEER_WHOOSH_CD;
+    }
+    this.lean = clamp(input * 0.85 + this.pxVel * 0.06, -1.5, 1.5);
+    this.lane = clamp(Math.round(-this.px / LANE_W), -1, 1);
+  }
+  _tickTurnHint() {
+    this.tilt.angle(); // keep the low-pass filter current
     const pend = this.path.pending;
-    this.tilt.angle(); // keep the filter and hysteresis up to date
     if (this.offPath || !pend || pend.committed) return;
     const w = this._turnWindow(this.speed);
-    const inWindow = this.pz >= pend.dist - w.before && this.pz <= pend.dist + w.after;
-    if (inWindow && this.tilt.live()) {
-      const dir = this.tilt.pollTurn();
-      if (dir) this.turn(dir);
-    }
-    if (!this._tiltHintShown && this.pz >= pend.dist - Math.max(w.before, 10) && this.pz <= pend.dist + w.after) {
-      this.toast('Tilt to turn', 1.8);
-      this._tiltHintShown = true;
+    if (!this._turnHintShown && this.pz >= pend.dist - Math.max(w.before, 10) && this.pz <= pend.dist + w.after) {
+      this.toast('Swipe to turn', 1.8);
+      this._turnHintShown = true;
     }
   }
+  _tickTiltTurn() { this._tickTurnHint(); }
   _cornerSafeDist() {
     return Math.max(PATH_W * 0.5 + 2, CORNER_SAFE_SEC * this.speed);
   }
@@ -3033,21 +3067,21 @@ class Game {
   }
   _addCoin(lane, z, h, phase) {
     const o = this.pools.obtain(this.pools.coins); if (!o) return;
-    o.live = true; o.taken = false; o.lane = lane; o.z = z; o.h = h || 0;
+    o.live = true; o.taken = false; o.lane = lane; o.lx = laneX(lane); o.z = z; o.h = h || 0;
     this.pools.styleCoin(o, phase == null ? (Math.random() < 0.5 ? BLOOM : AURORA) : phase);
     o.mesh.visible = true;
     this._placeOnPath(o);
   }
   _addGate(z, phase, span, lane = 0) {
     const o = this.pools.obtain(this.pools.gates); if (!o) return;
-    o.live = true; o.z = z; o.lane = lane; o.type = 'gate';
+    o.live = true; o.z = z; o.lane = lane; o.lx = laneX(lane); o.type = 'gate';
     this.pools.styleGate(o, phase, span);
     o.mesh.visible = true;
     this._placeOnPath(o);
   }
   _addObs(kind, lane, z) {
     const o = this.pools.obtain(this.pools.obs); if (!o) return;
-    o.live = true; o.lane = lane; o.z = z; o.type = kind; o.nearMissed = false;
+    o.live = true; o.lane = lane; o.lx = laneX(lane); o.z = z; o.type = kind; o.nearMissed = false;
     o.span = 'lane'; o.cover = [lane];
     this.pools.buildObs(o, kind, this.season);
     o.mesh.visible = true;
@@ -3065,7 +3099,7 @@ class Game {
     } else {
       cover = [span | 0]; mid = cover[0]; kindSpan = 'lane';
     }
-    o.live = true; o.lane = mid; o.z = z; o.nearMissed = false;
+    o.live = true; o.lane = mid; o.lx = laneX(mid); o.z = z; o.nearMissed = false;
     o.span = kindSpan; o.cover = cover;
     this.pools.buildObs(o, 'hurdle', this.season);
     o.mesh.visible = true;
@@ -3076,7 +3110,8 @@ class Game {
     const lx = (o.span === 'all') ? 0
       : (o.cover && o.cover.length > 1)
         ? o.cover.reduce((a, l) => a + laneX(l), 0) / o.cover.length
-        : laneX(o.lane || 0);
+        : (o.lx != null ? o.lx : laneX(o.lane || 0));
+    o.lx = lx;
     const pose = this.path.resolve(o.z, lx, true);
     o.mesh.position.set(pose.x, 0, pose.z);
     o.mesh.rotation.y = pose.yaw;
@@ -3105,7 +3140,7 @@ class Game {
       const pad = (o.type === 'gate') ? 0.75 : 0.7;
       if (px < Math.min(...xs) - pad || px > Math.max(...xs) + pad) return false;
     } else {
-      const ox = laneX(o.lane || 0);
+      const ox = (o.lx != null) ? o.lx : laneX(o.lane || 0);
       const half = (o.type === 'gate') ? 0.75 : 0.62;
       if (Math.abs(px - ox) > half) return false;
     }
@@ -3232,7 +3267,7 @@ class Game {
         this.fovKick = Math.max(this.fovKick, 8);
         this.shake = Math.max(this.shake, 0.22);
       }
-      this._tickTiltTurn();
+      this._tickTurnHint();
     } else if (home) {
       this.speed = 10.5;
       this.pz += this.speed * dt;
@@ -3265,11 +3300,7 @@ class Game {
       if (this.slideT > 0) this.slideT -= dt;
     }
 
-    const targetX = laneX(this.lane);
-    const k = 1 - Math.exp(-16 * dt);
-    const prevX = this.px;
-    this.px += (targetX - this.px) * k;
-    this.lean = clamp((targetX - this.px) * 1.8 + (this.px - prevX) / Math.max(dt, 0.0001) * 0.08, -1.5, 1.5);
+    this._steerLateral(dt, playing);
 
     if (this.offPath && (playing || dying)) {
       this.offVelY -= 22 * dt;
@@ -3353,7 +3384,7 @@ class Game {
     for (const o of this.pools.coins) {
       if (!o.live || o.taken) continue;
       o.mesh.rotation.y += dt * 4.2;
-      const pose = this.path.resolve(o.z, laneX(o.lane), true);
+      const pose = this.path.resolve(o.z, (o.lx != null ? o.lx : laneX(o.lane)), true);
       o.mesh.position.set(pose.x, COIN_Y + o.h + Math.sin(t * 4 + o.z) * 0.05, pose.z);
       o.mesh.rotation.y = pose.yaw + t * 4.2;
       const match = o.phase === this.phase;
@@ -3372,7 +3403,8 @@ class Game {
       const dz = o.z - this.pz;
       const dx = (o.mesh.position.x - this.wx) * (this.pose.sx || 0) + (o.mesh.position.z - this.wz) * (this.pose.sz || 0);
       // Use lane-space for pickup: path-distance window + lane closeness
-      const laneClose = Math.abs(laneX(o.lane) - this.px) < 0.55 || Math.hypot(o.mesh.position.x - this.wx, o.mesh.position.z - this.wz) < 0.7;
+      const ox = (o.lx != null) ? o.lx : laneX(o.lane);
+      const laneClose = Math.abs(ox - this.px) < 0.55 || Math.hypot(o.mesh.position.x - this.wx, o.mesh.position.z - this.wz) < 0.7;
       if (dz > 0.05 && dz < 0.85 && laneClose && this.jumpY < 1.3) {
         if (o.phase === this.phase) {
           o.taken = true; o.live = false; o.mesh.visible = false;
@@ -3408,8 +3440,10 @@ class Game {
     const dz = o.z - this.pz;
     if (dz > 0.35 || dz < -0.15) return;
     const covers = o.cover && o.cover.length ? o.cover : [o.lane || 0];
-    const same = o.span === 'all' || covers.some(l => Math.abs(laneX(l) - this.px) < 0.7);
-    const adj = covers.some(l => Math.abs(l - this.lane) === 1) && !same;
+    const xs = covers.map(laneX);
+    const same = o.span === 'all' || xs.some(x => Math.abs(x - this.px) < 0.7);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const adj = !same && this.px < maxX + 1.6 && this.px > minX - 1.6;
     const need = (o.clearance != null ? o.clearance : 0.68);
     const jumped = (o.type === 'low' || o.type === 'hurdle') && same && this.jumpY >= need;
     const slid = o.type === 'high' && same && this.slideT > 0;
@@ -3544,6 +3578,17 @@ class Game {
       injectTilt(gamma, neutral) { self.tilt.inject(gamma, neutral == null ? 0 : neutral); },
       tiltAngle() { return self.tilt.angle(); },
       tiltArmed() { return self.tilt.armed; },
+      steerAmt() { return self.tilt.steerAmt(); },
+      get pxVel() { return self.pxVel; },
+      get steerEdge() { return STEER_EDGE; },
+      laneMarkCount() {
+        let n = 0;
+        self.world.pathG.traverse(obj => {
+          if (!obj.isMesh || !obj.material) return;
+          if (obj.material === self.world.dashMat) n++;
+        });
+        return n;
+      },
       inCornerSafe: z => self._inCornerSafe(z),
       cornerSafeDist: () => self._cornerSafeDist(),
       objects() {
