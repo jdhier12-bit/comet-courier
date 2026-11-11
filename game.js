@@ -1,10 +1,10 @@
-// Season Shift v4.6 — SEASON_SHIFT_V4_6
+// Season Shift v4.7 — SEASON_SHIFT_V4_7
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, swipe lanes, tilt turns, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_6';
+const VERSION = 'SEASON_SHIFT_V4_7';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -37,6 +37,10 @@ const COIN_THICK = 0.07 * COIN_SCALE;
 const COIN_RIM = 0.04 * COIN_SCALE;
 const COIN_GAP = 2;            // constant path-distance spacing, same lane and across lines
 const COIN_Y = 0.46;
+const CAM_TURN_DUR = 0.26;     // camera yaw eases around a sharp 90° gameplay snap
+const TURN_POSE_DUR = 0.36;    // readable TurnL/TurnR window
+const HURDLE_CLEAR = 0.52;     // jumpY must reach this to clear a hurdle (peak jump is ~1.54)
+const HURDLE_H = 0.55;
 
 const SEASONS = [
   { id: 'spring', name: 'SPRING', tag: 'Blossom Trails',
@@ -138,6 +142,7 @@ window.__SEASONS = SEASONS;
 window.__PHASE = { BLOOM, AURORA, NAME: PHASE_NAME, COL: PHASE_COL, COL_B: PHASE_COL_B };
 window.__TILT = { ON: TILT_TURN_ON, OFF: TILT_TURN_OFF };
 window.__COIN = { SCALE: COIN_SCALE, GAP: COIN_GAP, R: COIN_R, Y: COIN_Y };
+window.__HURDLE = { CLEAR: HURDLE_CLEAR, H: HURDLE_H, CAM_TURN: CAM_TURN_DUR };
 
 // ---------------- save ----------------
 function defaultSave() {
@@ -202,9 +207,24 @@ const Sfx = {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       this.ctx = new AC();
+      // Voices -> bus (+6 dB vs. the old 0.28 master) -> compressor -> limiter -> dest
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.28;
-      this.master.connect(this.ctx.destination);
+      this.master.gain.value = 0.56;
+      this.comp = this.ctx.createDynamicsCompressor();
+      this.comp.threshold.value = -16;
+      this.comp.knee.value = 10;
+      this.comp.ratio.value = 3.5;
+      this.comp.attack.value = 0.004;
+      this.comp.release.value = 0.14;
+      this.limiter = this.ctx.createDynamicsCompressor();
+      this.limiter.threshold.value = -1.2;
+      this.limiter.knee.value = 0;
+      this.limiter.ratio.value = 20;
+      this.limiter.attack.value = 0.001;
+      this.limiter.release.value = 0.06;
+      this.master.connect(this.comp);
+      this.comp.connect(this.limiter);
+      this.limiter.connect(this.ctx.destination);
       const n = this.ctx.sampleRate * 0.4;
       const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
       const d = buf.getChannelData(0);
@@ -249,19 +269,19 @@ const Sfx = {
     this._coinLast = now;
     const spread = (Math.random() - 0.5) * 90;
     const vol = gap < 0.09 ? 0.55 : (gap < 0.16 ? 0.78 : 1);
-    this.tone(988 + spread, 1318 + spread, 0.08, 'triangle', 0.13 * vol);
-    this.tone(1318 + spread, 1760 + spread, 0.12, 'triangle', 0.09 * vol, 0.045);
+    this.tone(988 + spread, 1318 + spread, 0.09, 'triangle', 0.22 * vol);
+    this.tone(1318 + spread, 1760 + spread, 0.13, 'triangle', 0.16 * vol, 0.045);
   },
-  coinMiss() { this.tone(240, 180, 0.07, 'sine', 0.05); },
+  coinMiss() { this.tone(240, 180, 0.07, 'sine', 0.08); },
   jump() {
-    this.whoosh(0.12, 0.14, 400, 1400);
-    this.tone(240, 640, 0.12, 'sine', 0.14);
-    this.tone(640, 300, 0.14, 'sine', 0.08, 0.08);
+    this.whoosh(0.13, 0.24, 400, 1400);
+    this.tone(240, 640, 0.13, 'sine', 0.24);
+    this.tone(640, 300, 0.15, 'sine', 0.14, 0.08);
   },
-  slide() { this.whoosh(0.2, 0.2, 1000, 180); this.tone(340, 140, 0.16, 'sine', 0.05); },
-  lane() { this.whoosh(0.1, 0.16, 700, 1200); this.tone(520, 640, 0.06, 'sine', 0.045); },
-  turn() { this.whoosh(0.16, 0.24, 500, 1400); this.tone(440, 660, 0.1, 'sine', 0.07); },
-  nearMiss() { this.whoosh(0.14, 0.18, 1200, 400); this.tone(880, 440, 0.08, 'triangle', 0.05); },
+  slide() { this.whoosh(0.2, 0.22, 1000, 180); this.tone(340, 140, 0.16, 'sine', 0.06); },
+  lane() { this.whoosh(0.1, 0.18, 700, 1200); this.tone(520, 640, 0.06, 'sine', 0.055); },
+  turn() { this.whoosh(0.16, 0.26, 500, 1400); this.tone(440, 660, 0.1, 'sine', 0.08); },
+  nearMiss() { this.whoosh(0.14, 0.2, 1200, 400); this.tone(880, 440, 0.08, 'triangle', 0.06); },
   step() {
     if (!this._ok() || !this._noise) return;
     const c = this.ctx, t = c.currentTime;
@@ -270,14 +290,14 @@ const Sfx = {
     o.type = 'sine'; o.frequency.setValueAtTime(f0, t);
     o.frequency.exponentialRampToValueAtTime(Math.max(f0 * 0.55, 40), t + 0.06);
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.048, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.075, t + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
     o.connect(g); g.connect(this._out()); o.start(t); o.stop(t + 0.08);
     const src = c.createBufferSource(); src.buffer = this._noise;
     const lp = c.createBiquadFilter(); lp.type = 'lowpass';
     lp.frequency.setValueAtTime(240 + Math.random() * 80, t);
     const ng = c.createGain();
-    ng.gain.setValueAtTime(0.05, t);
+    ng.gain.setValueAtTime(0.075, t);
     ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
     src.connect(lp); lp.connect(ng); ng.connect(this._out());
     src.start(t); src.stop(t + 0.08);
@@ -294,7 +314,7 @@ const Sfx = {
       this.tone(784, 784, 0.28, 'triangle', 0.09, 0.12);
     }
   },
-  hit() { this.tone(180, 50, 0.4, 'sawtooth', 0.14); this.whoosh(0.28, 0.22, 300, 80); },
+  hit() { this.tone(180, 50, 0.4, 'sawtooth', 0.16); this.whoosh(0.28, 0.24, 300, 80); },
   tick() { this.tone(760, 760, 0.08, 'square', 0.07); },
   go() { this.tone(523, 784, 0.16, 'triangle', 0.12); this.tone(784, 1046, 0.18, 'triangle', 0.1, 0.08); }
 };
@@ -408,6 +428,74 @@ function makePathTexture() {
 }
 let _pathTex = null;
 function pathTex() { return _pathTex || (_pathTex = makePathTexture()); }
+
+function _pushCornerTri(pos, nor, uv, ax, ay, az, bx, by, bz, cx, cy, cz, nx, ny, nz, ua, va, ub, vb, uc, vc) {
+  pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+  nor.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+  uv.push(ua, va, ub, vb, uc, vc);
+}
+function cornerAcrossU(typ, x, z) {
+  const half = PATH_W * 0.5;
+  if (typ === 'right') return (Math.max(x, z) + half) / PATH_W;
+  if (typ === 'left') return (Math.max(-x, z) + half) / PATH_W;
+  // tee: incoming (south) uses X, both exits use Z
+  return (z < 0 ? (x + half) : (z + half)) / PATH_W;
+}
+function cornerAlongV(typ, x, z) {
+  const half = PATH_W * 0.5;
+  if (typ === 'right') return (Math.min(x, z) + half) / 8;
+  if (typ === 'left') return (Math.min(-x, z) + half) / 8;
+  return (z + half) / 8;
+}
+function buildCornerTileGeom(typ) {
+  const half = PATH_W * 0.5;
+  const y0 = -0.08, y1 = 0.08;
+  const pos = [], nor = [], uv = [];
+  const top = (x, z) => [x, y1, z, cornerAcrossU(typ, x, z), cornerAlongV(typ, x, z)];
+  const topTri = (ax, az, bx, bz, cx, cz) => {
+    const A = top(ax, az), B = top(bx, bz), C = top(cx, cz);
+    // Winding A,C,B is CCW from +Y so the road face is not back-face culled.
+    _pushCornerTri(pos, nor, uv, A[0], A[1], A[2], C[0], C[1], C[2], B[0], B[1], B[2], 0, 1, 0, A[3], A[4], C[3], C[4], B[3], B[4]);
+  };
+  const wall = (ax, az, bx, bz, outwardX, outwardZ) => {
+    const len = Math.hypot(bx - ax, bz - az) || 1;
+    const nx = outwardX, nz = outwardZ;
+    _pushCornerTri(pos, nor, uv, ax, y0, az, bx, y0, bz, bx, y1, bz, nx, 0, nz, 0, 0, 1, 0, 1, 1);
+    _pushCornerTri(pos, nor, uv, ax, y0, az, bx, y1, bz, ax, y1, az, nx, 0, nz, 0, 0, 1, 1, 0, 1);
+  };
+  if (typ === 'right') {
+    // Miter along z = x, from inner (-half,-half) to outer (half,half).
+    topTri(-half, -half, half, -half, half, half);
+    topTri(-half, -half, half, half, -half, half);
+    wall(half, -half, half, half, 1, 0);
+    wall(half, half, -half, half, 0, 1);
+    wall(-half, half, -half, -half, -1, 0);
+    wall(-half, -half, half, -half, 0, -1);
+  } else if (typ === 'left') {
+    // Miter along z = -x, from inner (half,-half) to outer (-half,half).
+    topTri(half, -half, -half, -half, -half, half);
+    topTri(half, -half, -half, half, half, half);
+    wall(-half, -half, -half, half, -1, 0);
+    wall(-half, half, half, half, 0, 1);
+    wall(half, half, half, -half, 1, 0);
+    wall(half, -half, -half, -half, 0, -1);
+  } else {
+    // Tee: south half incoming UVs, north half exit UVs, split on z = 0.
+    topTri(-half, -half, half, -half, half, 0);
+    topTri(-half, -half, half, 0, -half, 0);
+    topTri(-half, 0, half, 0, half, half);
+    topTri(-half, 0, half, half, -half, half);
+    wall(-half, -half, -half, half, -1, 0);
+    wall(half, half, half, -half, 1, 0);
+    wall(-half, half, half, half, 0, 1);
+    wall(half, -half, -half, -half, 0, -1);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return geo;
+}
 
 function cornerArcRadius(lx, side) {
   const half = PATH_W * 0.5;
@@ -681,7 +769,7 @@ function straightLenFor(elapsed) {
   const u = clamp(elapsed / 70, 0, 1);
   return lerp(44, 16, u * u * 0.3 + u * 0.7);
 }
-const SNAP_DUR = 0.15; // 0.12–0.18s heading snap at a sharp corner
+const SNAP_DUR = 0.12; // short body ease; camera uses CAM_TURN_DUR
 
 function poseAtStraight(seg, d, lx) {
   const t = d - seg.dist0;
@@ -1215,7 +1303,7 @@ class Penguin {
       else if (ev.moving || ev.idleRun) clip = 'Run';
       this._play(clip, ev.sliding || ev.jumpY > 0.02 || ev.turning ? 0.08 : 0.16);
       if ((clip === 'TurnL' || clip === 'TurnR') && this.actions[clip]) {
-        this.actions[clip].timeScale = 2.2;
+        this.actions[clip].timeScale = 1.2;
       }
       if (this.actions.Run) {
         this.actions.Run.timeScale = ev.idleRun ? 0.85 : (0.75 + spd * 0.055);
@@ -1525,7 +1613,7 @@ class World {
   }
 
   _ensureSegMesh(seg, season, path) {
-    const sig = [seg.type, seg.cap0 || '', seg.cap1 || '', Math.round(seg.length * 100), seg.chosen || 0, season].join(':');
+    const sig = [seg.type, seg.cap0 || '', seg.cap1 || '', Math.round(seg.length * 100), (seg.type === 'tee' ? (seg.chosen || 0) : 0), season].join(':');
     const existing = this._segMeshes.get(seg.id);
     if (existing && existing.userData.sig === sig) return existing;
     if (existing) {
@@ -1537,10 +1625,10 @@ class World {
     g.userData.sig = sig;
     const mat = this._pathMatFor(season);
     const half = PATH_W * 0.5;
-    const seam = 0.12;
+    const seam = 0.02; // tiny overlap so precision cannot open a gap; UVs/shader match so it will not z-fight
     if (seg.type === 'straight') {
-      // Dirt slab and curbs stop at the edge of the corner square so baked
-      // (and painted) markings do not overrun the junction.
+      // Dirt slab and curbs stop at the edge of the corner square so markings
+      // do not overrun the junction. The corner tile takes over from there.
       let slabLen = Math.max(0.2, seg.length);
       let slabZ = 0;
       if (seg.cap0 === 'corner') { const cut = half - seam; slabLen -= cut; slabZ += cut * 0.5; }
@@ -1554,7 +1642,7 @@ class World {
       g.add(slab);
       let curbLen = seg.length;
       let curbZ = 0;
-      const cut = half - 0.04;
+      const cut = half - 0.02;
       if (seg.cap0 === 'corner') { curbLen -= cut; curbZ += cut * 0.5; }
       if (seg.cap1 === 'corner') { curbLen -= cut; curbZ -= cut * 0.5; }
       curbLen = Math.max(0.2, curbLen);
@@ -1569,18 +1657,15 @@ class World {
       g.position.set(mid.x, 0, mid.z);
       g.rotation.y = seg.yaw0;
     } else {
-      // Sharp square corner / T tile. Curbs only on the exposed outer edges.
-      // Gameplay heading still snaps 90°; only the painted lane lines curve.
-      const tileMat = mat.clone();
-      tileMat.polygonOffset = true;
-      tileMat.polygonOffsetFactor = -1;
-      tileMat.polygonOffsetUnits = -2;
-      const tile = new THREE.Mesh(this.geo.cornerSlab, tileMat);
+      // One continuous corner piece (mitered UVs so the dirt reads as the same
+      // road as the incoming and outgoing slabs). Gameplay heading still snaps
+      // 90°; only the painted lane lines and the camera yaw curve/swing.
+      const typ = (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') ? seg.type : 'right';
+      const tile = new THREE.Mesh(buildCornerTileGeom(typ), mat);
       tile.position.y = 0.02;
       tile.receiveShadow = true;
-      tile.renderOrder = 1;
+      tile.castShadow = false;
       g.add(tile);
-      const typ = seg.type;
       const edges = typ === 'tee' ? ['fwd']
         : typ === 'left' ? ['left', 'fwd']
         : typ === 'right' ? ['right', 'fwd']
@@ -1594,6 +1679,17 @@ class World {
         else { c.position.set(half, 0.12, 0); }
         g.add(c);
       }
+      // Caps hide the 90° curb joints at the inner and outer corners of the L/T.
+      const cap = (x, z) => {
+        const k = new THREE.Mesh(this.geo.box, this.curbMat);
+        k.scale.set(0.22, 0.22, 0.22);
+        k.position.set(x, 0.12, z);
+        k.castShadow = true;
+        g.add(k);
+      };
+      if (typ === 'right') { cap(half, half); cap(-half, -half); }
+      else if (typ === 'left') { cap(-half, half); cap(half, -half); }
+      else { cap(-half, half); cap(half, half); cap(-half, -half); cap(half, -half); }
       g.position.set(seg.x0, 0, seg.z0);
       g.rotation.y = seg.yaw0;
     }
@@ -1732,36 +1828,11 @@ class World {
   }
 
   _syncChevrons(path) {
+    // v4.7: no painted arrows / chevrons on the road. The only turn hint is the
+    // "Tilt to turn" toast on the first corner.
     for (const c of this.chevL) this.pathG.remove(c);
     for (const c of this.chevR) this.pathG.remove(c);
     this.chevL.length = 0; this.chevR.length = 0;
-    const p = path.pending;
-    if (!p || p.committed) return;
-    const showL = p.type === 'left' || p.type === 'tee';
-    const showR = p.type === 'right' || p.type === 'tee';
-    if (!this.mArrow) {
-      this.mArrow = std(0xfff4c4, { roughness: 0.35, emissive: 0xffe088, emissiveIntensity: 0.85 });
-    }
-    // Runway of large painted arrows, spaced so they stay readable far away without overlapping.
-    const marks = [24, 16, 9];
-    for (let i = 0; i < marks.length; i++) {
-      const d = p.dist - marks[i];
-      if (d < 1) continue;
-      const pose = path.resolve(d, 0, false);
-      const sc = 1.05 + (1 - i / marks.length) * 0.28;
-      const place = (dirSign, bucket) => {
-        const m = new THREE.Mesh(this.geo.arrow, this.mArrow);
-        // Point left (dirSign -1) or right (+1) relative to the current heading.
-        m.rotation.y = pose.yaw + (dirSign < 0 ? Math.PI / 2 : -Math.PI / 2);
-        const lat = (showL && showR) ? dirSign * 0.95 : dirSign * 0.15;
-        m.position.set(pose.x + pose.sx * lat, 0.14, pose.z + pose.sz * lat);
-        m.scale.set(sc, 1, sc);
-        this.pathG.add(m);
-        bucket.push(m);
-      };
-      if (showL) place(-1, this.chevL);
-      if (showR) place(1, this.chevR);
-    }
   }
 
   setSeason(i, playerZ = 0, path = null) {
@@ -1962,7 +2033,7 @@ class Pools {
     this.obs = [];
     for (let i = 0; i < 48; i++) this.coins.push(this._coin());
     for (let i = 0; i < 8; i++) this.gates.push(this._gate());
-    for (let i = 0; i < 14; i++) this.obs.push(this._obs());
+    for (let i = 0; i < 28; i++) this.obs.push(this._obs());
   }
   _coin() {
     const g = new THREE.Group();
@@ -2010,7 +2081,7 @@ class Pools {
     const g = new THREE.Group();
     g.visible = false;
     this.scene.add(g);
-    return { type: 'low', mesh: g, live: false, lane: 0, z: 0, height: 0.65, kind: 'low', built: '', nearMissed: false };
+    return { type: 'low', mesh: g, live: false, lane: 0, z: 0, height: HURDLE_H, kind: 'low', built: '', nearMissed: false, span: 'lane', cover: [0], clearance: HURDLE_CLEAR };
   }
   obtain(list) {
     for (const o of list) if (!o.live) return o;
@@ -2056,47 +2127,318 @@ class Pools {
     o.mFrame.emissiveIntensity = (solid ? 0.5 : 0.18) + crawl;
     o.panel.scale.z = solid ? 1 : 0.4;
   }
+  _hurdleNoise(x, y, z) {
+    const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
+    return s - Math.floor(s);
+  }
+  _ensureHurdleAssets() {
+    if (this._hg) return this._hg;
+    const petalShape = new THREE.Shape();
+    petalShape.moveTo(0, 0);
+    petalShape.bezierCurveTo(0.11, 0.04, 0.15, 0.2, 0, 0.36);
+    petalShape.bezierCurveTo(-0.15, 0.2, -0.11, 0.04, 0, 0);
+    const petal = new THREE.ExtrudeGeometry(petalShape, {
+      depth: 0.012, bevelEnabled: true, bevelThickness: 0.007, bevelSize: 0.01,
+      bevelSegments: 4, curveSegments: 20
+    });
+    petal.center();
+
+    // Smooth oval leaf (high-segment disc, slightly cupped) — no sharp extruded shards.
+    const leaf = new THREE.CircleGeometry(0.15, 24);
+    {
+      const pos = leaf.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i);
+        pos.setX(i, x * 0.62);
+        pos.setZ(i, 0.035 * (1 - Math.min(1, x * x * 40 + y * y * 12))); // slight cup
+      }
+      pos.needsUpdate = true;
+      leaf.computeVertexNormals();
+    }
+
+    const pts = [];
+    for (let i = 0; i <= 32; i++) {
+      const a = (i / 32) * Math.PI;
+      const r = Math.sin(a) * (0.96 + 0.14 * Math.sin(a));
+      const y = -Math.cos(a) * 0.78;
+      pts.push(new THREE.Vector2(Math.max(0.001, r), y));
+    }
+    const pumpkin = new THREE.LatheGeometry(pts, 64);
+    {
+      const pos = pumpkin.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        const th = Math.atan2(z, x);
+        const mid = 1 - Math.min(1, Math.abs(y) / 0.78);
+        const lobe = 1 - 0.22 * Math.pow(Math.abs(Math.sin(th * 4)), 1.2) * mid;
+        pos.setX(i, x * lobe);
+        pos.setZ(i, z * lobe);
+      }
+      pos.needsUpdate = true;
+      pumpkin.computeVertexNormals();
+    }
+
+    const stemPts = [
+      new THREE.Vector2(0.045, 0),
+      new THREE.Vector2(0.04, 0.06),
+      new THREE.Vector2(0.028, 0.12),
+      new THREE.Vector2(0.02, 0.16)
+    ];
+    const stem = new THREE.LatheGeometry(stemPts, 14);
+
+    const cap = new THREE.CircleGeometry(1, 48);
+    {
+      const pos = cap.attributes.position;
+      const col = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        const r = Math.hypot(pos.getX(i), pos.getY(i));
+        const ring = 0.42 + 0.22 * (0.5 + 0.5 * Math.sin(r * 26 * Math.PI));
+        col[i * 3] = ring * 0.62;
+        col[i * 3 + 1] = ring * 0.42;
+        col[i * 3 + 2] = ring * 0.24;
+      }
+      cap.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    }
+
+    const spark = new THREE.OctahedronGeometry(0.028, 0);
+
+    this._hg = { petal, leaf, pumpkin, stem, cap, spark };
+    this._hm = {
+      bark: std(0x7a4e2c, { roughness: 0.84, metalness: 0.02 }),
+      barkDark: std(0x5a3518, { roughness: 0.8 }),
+      moss: std(0x3d9a52, { roughness: 0.72, emissive: 0x1a5a28, emissiveIntensity: 0.07 }),
+      mossLite: std(0x58b86a, { roughness: 0.68 }),
+      cap: new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0.0, vertexColors: true }),
+      hedge: std(0x2f8a3e, { roughness: 0.7, emissive: 0x145022, emissiveIntensity: 0.05 }),
+      hedgeDeep: std(0x247034, { roughness: 0.74 }),
+      leafA: std(0x3da84c, { roughness: 0.62, side: THREE.DoubleSide }),
+      leafB: std(0x2e8c40, { roughness: 0.64, side: THREE.DoubleSide }),
+      leafC: std(0x59c46a, { roughness: 0.6, side: THREE.DoubleSide }),
+      petal: [
+        std(0xff8fb3, { roughness: 0.45, emissive: 0xff6b9a, emissiveIntensity: 0.16, side: THREE.DoubleSide }),
+        std(0xfff176, { roughness: 0.45, emissive: 0xffd15c, emissiveIntensity: 0.14, side: THREE.DoubleSide }),
+        std(0xff9f43, { roughness: 0.45, emissive: 0xff7a2a, emissiveIntensity: 0.12, side: THREE.DoubleSide }),
+        std(0xf7f4ff, { roughness: 0.42, emissive: 0xffd0de, emissiveIntensity: 0.08, side: THREE.DoubleSide }),
+        std(0xff6b9a, { roughness: 0.45, emissive: 0xe85a8c, emissiveIntensity: 0.16, side: THREE.DoubleSide })
+      ],
+      stamen: std(0xffe08a, { roughness: 0.4, emissive: 0xffc14d, emissiveIntensity: 0.35 }),
+      pumpkin: std(0xf07820, { roughness: 0.5, emissive: 0xb84a10, emissiveIntensity: 0.07 }),
+      pumpkinDeep: std(0xd45e14, { roughness: 0.52, emissive: 0x9a3a0c, emissiveIntensity: 0.06 }),
+      pumpkinGold: std(0xff9a32, { roughness: 0.48, emissive: 0xd46a10, emissiveIntensity: 0.08 }),
+      vine: std(0x3da84c, { roughness: 0.62 }),
+      snow: std(0xf6fbff, { roughness: 0.42, metalness: 0.04, emissive: 0xdceefe, emissiveIntensity: 0.08 }),
+      snowShade: std(0xdce8f4, { roughness: 0.5, emissive: 0xc5d8ec, emissiveIntensity: 0.05 }),
+      spark: std(0xffffff, { roughness: 0.2, metalness: 0.35, emissive: 0xfff6d0, emissiveIntensity: 0.95 })
+    };
+    return this._hg;
+  }
+  _makeLogBody(len, radius) {
+    const radSeg = 48;
+    const hSeg = Math.max(18, Math.round(len * 12));
+    const g = new THREE.CylinderGeometry(radius, radius * 1.05, len, radSeg, hSeg, true);
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const th = Math.atan2(z, x);
+      const r = Math.hypot(x, z);
+      const groove = 0.038 * Math.sin(th * 11 + y * 0.4);
+      const n1 = 0.022 * Math.sin(th * 5.2 + y * 1.6) * Math.cos(y * 2.1);
+      const n2 = 0.014 * Math.sin(th * 19 + y * 3.4 + 1.7);
+      const belly = 1 + 0.045 * Math.cos((y / Math.max(len * 0.5, 0.2)) * Math.PI * 0.5);
+      const nr = (r + groove + n1 + n2) * belly;
+      pos.setX(i, Math.cos(th) * nr);
+      pos.setZ(i, Math.sin(th) * nr);
+    }
+    pos.needsUpdate = true;
+    g.computeVertexNormals();
+    return g;
+  }
+  _makeSnowMound(sx, sy, sz) {
+    const g = new THREE.SphereGeometry(1, 36, 28);
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const n = 0.07 * Math.sin(x * 5.1 + z * 3.7) + 0.045 * Math.sin(x * 9.2 + y * 6.3 + z * 4.4)
+        + 0.03 * Math.sin(x * 14.5 - z * 11.0);
+      let ny = y + n * (0.4 + Math.max(0, y));
+      if (ny < 0) ny *= 0.12; // sit on the path instead of burying a full sphere
+      pos.setX(i, x * (1 + n * 0.35));
+      pos.setY(i, ny);
+      pos.setZ(i, z * (1 + n * 0.3));
+    }
+    pos.needsUpdate = true;
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, this._hm.snow);
+    m.scale.set(sx, sy, sz);
+    return m;
+  }
+  _addFlower(mesh, x, y, z, scale, petalMat) {
+    const g = new THREE.Group();
+    const petals = 6;
+    for (let i = 0; i < petals; i++) {
+      const p = new THREE.Mesh(this._hg.petal, petalMat);
+      const a = (i / petals) * Math.PI * 2;
+      p.position.set(Math.cos(a) * 0.07, 0.01, Math.sin(a) * 0.07);
+      p.rotation.set(-0.85, a, 0.12);
+      p.scale.setScalar(0.85);
+      g.add(p);
+    }
+    const mid = new THREE.Mesh(new THREE.SphereGeometry(0.045, 14, 12), this._hm.stamen);
+    mid.position.y = 0.02;
+    g.add(mid);
+    g.position.set(x, y, z);
+    g.scale.setScalar(scale);
+    g.rotation.y = this._hurdleNoise(x, y, z) * Math.PI * 2;
+    mesh.add(g);
+  }
+  _buildHurdle(mesh, season, width) {
+    const w = Math.max(1.3, width);
+    this._ensureHurdleAssets();
+    if (season === 0) {
+      // Spring: dense flower hedge with individual leaves and petals
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, Math.max(0.5, w - 0.85), 8, 24), this._hm.hedge);
+      body.rotation.z = Math.PI / 2; body.position.y = 0.30; body.castShadow = true; mesh.add(body);
+      const under = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, Math.max(0.4, w - 0.7), 8, 20), this._hm.hedgeDeep);
+      under.rotation.z = Math.PI / 2; under.position.set(0, 0.22, 0.06); mesh.add(under);
+      const nLeaves = Math.max(28, Math.round(w * 18));
+      const leafMats = [this._hm.leafA, this._hm.leafB, this._hm.leafC];
+      for (let i = 0; i < nLeaves; i++) {
+        const t = i / (nLeaves - 1);
+        const x = -w * 0.44 + t * w * 0.88 + (this._hurdleNoise(i, 2, w) - 0.5) * 0.16;
+        const ang = (i * 2.4 + t * 6) % (Math.PI * 2);
+        const lift = 0.28 + this._hurdleNoise(i, 5, w) * 0.26;
+        const lf = new THREE.Mesh(this._hg.leaf, leafMats[i % 3]);
+        const lz = Math.cos(ang) * 0.24;
+        lf.position.set(x, lift, lz);
+        lf.lookAt(x, lift + 0.45, lz * 2.4);
+        lf.rotateX(-0.35);
+        lf.rotateZ((this._hurdleNoise(i, 3, 1) - 0.5) * 0.4);
+        lf.scale.setScalar(0.7 + this._hurdleNoise(i, 8, 2) * 0.35);
+        lf.castShadow = i % 4 === 0;
+        mesh.add(lf);
+      }
+      const nFlowers = Math.max(7, Math.round(w * 3.8));
+      for (let i = 0; i < nFlowers; i++) {
+        const t = nFlowers === 1 ? 0.5 : i / (nFlowers - 1);
+        const x = -w * 0.40 + t * w * 0.80 + (this._hurdleNoise(i, 9, w) - 0.5) * 0.12;
+        const y = 0.50 + this._hurdleNoise(i, 4, 1) * 0.10;
+        const z = (this._hurdleNoise(i, 7, 3) - 0.5) * 0.22;
+        this._addFlower(mesh, x, y, z, 0.85 + this._hurdleNoise(i, 6, 2) * 0.35, this._hm.petal[i % this._hm.petal.length]);
+      }
+    } else if (season === 1) {
+      // Summer: fallen log with bark grooves, knots, and moss clumps
+      const radius = 0.27;
+      const len = Math.max(1.1, w - 0.15);
+      const log = new THREE.Mesh(this._makeLogBody(len, radius), this._hm.bark);
+      log.rotation.z = Math.PI / 2; log.position.y = radius; log.castShadow = true; mesh.add(log);
+      const capL = new THREE.Mesh(this._hg.cap, this._hm.cap);
+      capL.scale.setScalar(radius * 1.02);
+      capL.position.set(-len * 0.5, radius, 0);
+      capL.rotation.y = Math.PI / 2;
+      mesh.add(capL);
+      const capR = capL.clone();
+      capR.position.x = len * 0.5;
+      capR.rotation.y = -Math.PI / 2;
+      mesh.add(capR);
+      const knots = Math.max(2, Math.round(w * 0.7));
+      for (let i = 0; i < knots; i++) {
+        const t = knots === 1 ? 0.5 : (i + 0.4) / knots;
+        const knot = new THREE.Mesh(new THREE.SphereGeometry(0.07 + (i % 3) * 0.015, 18, 14), this._hm.barkDark);
+        const side = (i % 2 ? 1 : -1);
+        knot.scale.set(1, 0.55, 0.95);
+        knot.position.set(-len * 0.32 + t * len * 0.64, radius + 0.02, side * (radius * 0.72));
+        knot.rotation.y = side * 0.4;
+        mesh.add(knot);
+      }
+      const clumps = Math.max(5, Math.round(w * 2.2));
+      for (let i = 0; i < clumps; i++) {
+        const t = i / (clumps - 1);
+        const moss = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 12), (i % 2 ? this._hm.moss : this._hm.mossLite));
+        const sx = 0.55 + this._hurdleNoise(i, 1, w) * 0.45;
+        moss.scale.set(sx * 1.3, 0.45 + this._hurdleNoise(i, 2, 1) * 0.25, sx);
+        moss.position.set(
+          -len * 0.36 + t * len * 0.72 + (this._hurdleNoise(i, 3, 2) - 0.5) * 0.1,
+          radius + 0.14 + this._hurdleNoise(i, 4, 3) * 0.04,
+          (this._hurdleNoise(i, 5, 4) - 0.5) * 0.22
+        );
+        moss.castShadow = i % 2 === 0;
+        mesh.add(moss);
+      }
+    } else if (season === 2) {
+      // Autumn: ribbed pumpkins with stems, vines, and leaves
+      const n = Math.max(3, Math.min(5, Math.round(w / 1.05)));
+      const pumMats = [this._hm.pumpkin, this._hm.pumpkinDeep, this._hm.pumpkinGold];
+      for (let i = 0; i < n; i++) {
+        const t = n === 1 ? 0.5 : i / (n - 1);
+        const x = -w * 0.38 + t * w * 0.76;
+        const rad = 0.29 + (i % 3) * 0.025;
+        const body = new THREE.Mesh(this._hg.pumpkin, pumMats[i % 3]);
+        body.scale.setScalar(rad);
+        body.position.set(x, rad * 0.80, 0);
+        body.rotation.y = this._hurdleNoise(i, 1, 8) * Math.PI;
+        body.castShadow = true;
+        mesh.add(body);
+        const stem = new THREE.Mesh(this._hg.stem, this._hm.vine);
+        stem.position.set(x, rad * 1.52, 0);
+        stem.rotation.z = (this._hurdleNoise(i, 2, 3) - 0.5) * 0.5;
+        stem.scale.setScalar(rad / 0.28);
+        mesh.add(stem);
+        const leaf = new THREE.Mesh(this._hg.leaf, this._hm.leafA);
+        leaf.position.set(x + 0.08, rad * 0.55, 0.14);
+        leaf.rotation.set(-1.1, 0.4, 0.5);
+        leaf.scale.setScalar(0.9);
+        mesh.add(leaf);
+        if (i === n - 1 || i === 0) {
+          const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(x, rad * 1.15, 0.02),
+            new THREE.Vector3(x + 0.12, rad * 1.4, 0.1),
+            new THREE.Vector3(x + 0.18, rad * 0.7, 0.16)
+          );
+          const vine = new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.016, 8, false), this._hm.vine);
+          mesh.add(vine);
+        }
+      }
+    } else {
+      // Winter: soft layered snow bank with sparkle
+      const m1 = this._makeSnowMound(w * 0.50, 0.50, 0.58);
+      m1.position.set(0, 0.06, 0); m1.castShadow = true; mesh.add(m1);
+      const m2 = this._makeSnowMound(w * 0.30, 0.40, 0.42);
+      m2.material = this._hm.snowShade;
+      m2.position.set(-w * 0.22, 0.04, 0.08); mesh.add(m2);
+      const m3 = this._makeSnowMound(w * 0.24, 0.34, 0.36);
+      m3.position.set(w * 0.24, 0.03, -0.06); mesh.add(m3);
+      const m4 = this._makeSnowMound(w * 0.18, 0.28, 0.28);
+      m4.material = this._hm.snowShade;
+      m4.position.set(-w * 0.04, 0.18, -0.1); mesh.add(m4);
+      const m5 = this._makeSnowMound(w * 0.16, 0.22, 0.24);
+      m5.position.set(w * 0.12, 0.16, 0.1); mesh.add(m5);
+      // flatten anything underground by clipping visually with a slight lift already applied
+      const sparks = Math.max(8, Math.round(w * 4));
+      for (let i = 0; i < sparks; i++) {
+        const t = i / (sparks - 1);
+        const sp = new THREE.Mesh(this._hg.spark, this._hm.spark);
+        sp.position.set(
+          -w * 0.38 + t * w * 0.76 + (this._hurdleNoise(i, 1, 9) - 0.5) * 0.16,
+          0.22 + this._hurdleNoise(i, 2, 8) * 0.28,
+          (this._hurdleNoise(i, 3, 7) - 0.5) * 0.28
+        );
+        sp.rotation.set(this._hurdleNoise(i, 4, 1) * 1.5, this._hurdleNoise(i, 5, 2) * 2, 0.4);
+        const sc = 0.7 + this._hurdleNoise(i, 6, 3) * 0.8;
+        sp.scale.setScalar(sc);
+        mesh.add(sp);
+      }
+    }
+  }
+
   buildObs(o, kind, season) {
     const mesh = o.mesh;
     while (mesh.children.length) mesh.remove(mesh.children[0]);
     o.kind = kind;
-    o.type = kind;
-    o.height = kind === 'low' ? 0.72 : 1.7;
     o.nearMissed = false;
-    if (kind === 'low') {
-      // Chunky rounded barriers, readable from far: big saturated body + a vertical glow nib.
-      let body, mat;
-      if (season === 0) {
-        mat = std(0x3da84c, { roughness: 0.62, emissive: 0x1e6a30, emissiveIntensity: 0.12 });
-        body = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 0.85, 6, 14), mat);
-        body.rotation.z = Math.PI / 2; body.position.y = 0.42; body.castShadow = true; mesh.add(body);
-        for (let i = 0; i < 4; i++) {
-          const f = new THREE.Mesh(this.geo.sphereLo, std(0xff8fb3, { emissive: 0xff8fb3, emissiveIntensity: 0.3 }));
-          f.position.set(-0.48 + i * 0.32, 0.78, 0.12);
-          f.scale.setScalar(0.14); mesh.add(f);
-        }
-      } else if (season === 1) {
-        mat = std(0xe8c14a, { roughness: 0.5, emissive: 0xc48a18, emissiveIntensity: 0.12 });
-        body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.9, 6, 14), mat);
-        body.rotation.z = Math.PI / 2; body.position.y = 0.42; body.castShadow = true; mesh.add(body);
-        const band = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.07, 8, 16), std(0xd48a1a, { emissive: 0xd48a1a, emissiveIntensity: 0.2 }));
-        band.rotation.y = Math.PI / 2; band.position.y = 0.42; mesh.add(band);
-      } else if (season === 2) {
-        mat = std(0xe07a2a, { roughness: 0.62, emissive: 0xb84a10, emissiveIntensity: 0.15 });
-        body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.95, 6, 14), mat);
-        body.rotation.z = Math.PI / 2; body.position.y = 0.44; body.castShadow = true; mesh.add(body);
-        const end1 = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), std(0xc45a18));
-        end1.position.set(-0.7, 0.44, 0); mesh.add(end1);
-        const end2 = end1.clone(); end2.position.x = 0.7; mesh.add(end2);
-      } else {
-        mat = std(0xbfe9ff, { roughness: 0.22, metalness: 0.18, transparent: true, opacity: 0.9, emissive: 0x7ad7ff, emissiveIntensity: 0.28 });
-        body = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 0.9, 6, 14), mat);
-        body.rotation.z = Math.PI / 2; body.position.y = 0.44; body.castShadow = true; mesh.add(body);
-      }
-      const nib = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), std(0xfff0a0, { emissive: 0xffe080, emissiveIntensity: 0.8 }));
-      nib.position.set(0, 0.95, 0);
-      mesh.add(nib);
-    } else {
+    if (kind === 'high') {
+      o.type = 'high';
+      o.height = 1.7;
+      o.clearance = 0;
       const postM = std(0x5a4630, { roughness: 0.65 });
       const barC = [0xff8fb3, 0x4ec4d6, 0xff7a2a, 0x9fe8ff][season];
       const p1 = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 1.55, 5, 10), postM);
@@ -2107,8 +2449,16 @@ class Pools {
       bar.rotation.z = Math.PI / 2; bar.position.y = 0.95; bar.castShadow = true;
       const bar2 = bar.clone(); bar2.position.y = 1.42;
       mesh.add(p1, p2, bar, bar2);
+    } else {
+      // Low jumpables: season-themed hurdles (log, flower hedge, pumpkins, snow bank).
+      o.type = 'low';
+      o.height = HURDLE_H;
+      o.clearance = HURDLE_CLEAR;
+      const span = o.span || 'lane';
+      const width = span === 'all' ? 5.5 : (span === 'wide' ? 3.35 : 1.55);
+      this._buildHurdle(mesh, season, width);
     }
-    o.built = season + kind;
+    o.built = season + kind + (o.span || '');
   }
 }
 
@@ -2244,6 +2594,8 @@ class Game {
     this.snap = null; this.snapAt = null; this.snapDir = 0;
     this.turnLean = 0;
     this.spawnZ = 0; this.rowCount = 0; this.lastGate = -10;
+    this.lastHurdleZ = 0; this.lastHazardZ = 0;
+    this.camTurn = null; this.turnPoseT = 0; this.turnPoseDir = 0;
     this.lean = 0;
     this.homeOff = 0;
     this.toastT = 0;
@@ -2508,16 +2860,27 @@ class Game {
     this.shake = 0.45;
     this.fovKick = 8;
     this.snap = null; this.snapAt = null;
+    this.camTurn = null;
   }
   _beginSnap(dir) {
+    const destYaw = turnYaw(this.yaw, dir);
     this.snap = {
       t: 0,
       dur: SNAP_DUR,
       dir,
-      yaw0: this.camYaw != null ? this.camYaw : this.yaw,
+      yaw0: this.yaw,
+      destYaw,
       x0: this.wx,
       z0: this.wz
     };
+    this.camTurn = {
+      t: 0,
+      dur: CAM_TURN_DUR,
+      yaw0: this.camYaw != null ? this.camYaw : this.yaw,
+      yaw1: destYaw
+    };
+    this.turnPoseT = TURN_POSE_DUR;
+    this.turnPoseDir = dir;
     this.snapAt = null;
   }
 
@@ -2721,6 +3084,8 @@ class Game {
     this.elapsed = hs * 3.5;
     this.speed = this._calcSpeed();
     this.rowCount = 0; this.lastGate = -99;
+    this.lastHurdleZ = 0; this.lastHazardZ = 0;
+    this.camTurn = null; this.turnPoseT = 0; this.turnPoseDir = 0;
     this._spdLvl = Math.floor(this.elapsed / 20);
     this.shields = this.save.upgrades.shield | 0;
     this.lives = this.save.upgrades.extraLife | 0;
@@ -2820,6 +3185,14 @@ class Game {
       this.spawnZ += this._gap();
     }
   }
+  _hazardGap() {
+    return Math.max(8.5, 0.85 * this.speed);
+  }
+  _hurdleGap() {
+    const u = clamp((this.speed - 10.5) / 16, 0, 1);
+    // ~2.7s between jumps at the start, tightening to ~1.5s as speed climbs.
+    return lerp(2.15, 1.35, u) * this.speed;
+  }
   _spawnRow(z) {
     this.rowCount++;
     const t = this.elapsed;
@@ -2829,35 +3202,57 @@ class Game {
       this._addCoinLine(lanes[irand(3)], z, 4);
       return;
     }
+    const sinceH = z - (this.lastHurdleZ || 0);
+    const sinceHaz = z - (this.lastHazardZ || 0);
+    const hazOk = sinceHaz >= this._hazardGap();
+    const hurdleDue = sinceH >= this._hurdleGap() && hazOk;
+    if (hurdleDue && r < 0.9) {
+      if (Math.random() < 0.55) this._addHurdle('all', z);
+      else {
+        const a = irand(2);
+        this._addHurdle([a - 1, a], z);
+      }
+      this.lastHurdleZ = z;
+      this.lastHazardZ = z;
+      if (Math.random() < 0.45) this._addCoinLine(lanes[irand(3)], z + 4, 3);
+      return;
+    }
     const gateChance = t < 5 ? 0 : Math.min(0.12 + t * 0.0055, 0.36);
     const minGate = t < 8 ? 5 : (t < 25 ? 4 : 3);
-    if (r < gateChance && this.rowCount - this.lastGate >= minGate) {
+    if (hazOk && r < gateChance && this.rowCount - this.lastGate >= minGate) {
       this.lastGate = this.rowCount;
+      this.lastHazardZ = z;
       const ph = Math.random() < 0.62 ? this.phase : this.phase ^ 1;
       this._addGate(z, ph, 'all');
       const cl = lanes[irand(3)];
       this._addCoinLine(cl, z + 5, 4);
       return;
     }
-    if (r < gateChance + 0.12 && t > 10 && this.rowCount - this.lastGate >= 2) {
+    if (hazOk && r < gateChance + 0.12 && t > 10 && this.rowCount - this.lastGate >= 2) {
       this.lastGate = this.rowCount;
+      this.lastHazardZ = z;
       const take = 1 + (Math.random() < Math.min(0.2 + t * 0.01, 0.7) ? 1 : 0);
       const sh = lanes.slice().sort(() => Math.random() - 0.5);
       for (let i = 0; i < take; i++) this._addGate(z, Math.random() < 0.5 ? 0 : 1, 'lane', sh[i]);
       this._addCoinLine(sh[take] ?? 0, z + 3, 3);
       return;
     }
-    if (r > 0.86) {
+    if (r > 0.88) {
       const l = lanes[irand(3)];
       this._addCoinLine(l, z, 5);
+      return;
+    }
+    if (!hazOk) {
+      this._addCoinLine(lanes[irand(3)], z, 3);
       return;
     }
     const n = Math.random() < Math.min(0.22 + t * 0.01, 0.7) ? 2 : 1;
     const sh = lanes.slice().sort(() => Math.random() - 0.5);
     for (let i = 0; i < n; i++) {
-      const typ = Math.random() < 0.55 ? 'low' : 'high';
+      const typ = Math.random() < 0.62 ? 'low' : 'high';
       this._addObs(typ, sh[i], z);
     }
+    this.lastHazardZ = z;
     if (Math.random() < 0.7) this._addCoinLine(sh[n] ?? 0, z + 2, 3);
   }
   _nextCoinZ(lane, z) {
@@ -2906,12 +3301,35 @@ class Game {
   _addObs(kind, lane, z) {
     const o = this.pools.obtain(this.pools.obs); if (!o) return;
     o.live = true; o.lane = lane; o.z = z; o.type = kind; o.nearMissed = false;
+    o.span = 'lane'; o.cover = [lane];
     this.pools.buildObs(o, kind, this.season);
     o.mesh.visible = true;
     this._placeOnPath(o);
   }
+  _addHurdle(span, z) {
+    const o = this.pools.obtain(this.pools.obs); if (!o) return;
+    let cover, mid, kindSpan;
+    if (span === 'all' || (Array.isArray(span) && span.length >= 3)) {
+      cover = [-1, 0, 1]; mid = 0; kindSpan = 'all';
+    } else if (Array.isArray(span)) {
+      cover = span.slice().sort((a, b) => a - b);
+      mid = cover.reduce((a, b) => a + b, 0) / cover.length;
+      kindSpan = cover.length >= 2 ? 'wide' : 'lane';
+    } else {
+      cover = [span | 0]; mid = cover[0]; kindSpan = 'lane';
+    }
+    o.live = true; o.lane = mid; o.z = z; o.nearMissed = false;
+    o.span = kindSpan; o.cover = cover;
+    this.pools.buildObs(o, 'hurdle', this.season);
+    o.mesh.visible = true;
+    this._placeOnPath(o);
+    return o;
+  }
   _placeOnPath(o) {
-    const lx = (o.span === 'all') ? 0 : laneX(o.lane || 0);
+    const lx = (o.span === 'all') ? 0
+      : (o.cover && o.cover.length > 1)
+        ? o.cover.reduce((a, l) => a + laneX(l), 0) / o.cover.length
+        : laneX(o.lane || 0);
     const pose = this.path.resolve(o.z, lx, true);
     o.mesh.position.set(pose.x, 0, pose.z);
     o.mesh.rotation.y = pose.yaw;
@@ -2935,13 +3353,17 @@ class Game {
     const px = this.px;
     if (o.span === 'all' || (o.type === 'gate' && o.span === 'all')) {
       // full width
+    } else if (o.cover && o.cover.length) {
+      const xs = o.cover.map(laneX);
+      const pad = (o.type === 'gate') ? 0.75 : 0.7;
+      if (px < Math.min(...xs) - pad || px > Math.max(...xs) + pad) return false;
     } else {
       const ox = laneX(o.lane || 0);
       const half = (o.type === 'gate') ? 0.75 : 0.62;
       if (Math.abs(px - ox) > half) return false;
     }
     if (o.type === 'gate') return o.phase === this.phase;
-    if (o.type === 'low') return this.jumpY < 0.68;
+    if (o.type === 'low' || o.type === 'hurdle') return this.jumpY < (o.clearance != null ? o.clearance : HURDLE_CLEAR);
     if (o.type === 'high') return this.slideT <= 0;
     return false;
   }
@@ -3048,6 +3470,7 @@ class Game {
       }
       this._tryConsumeTurn();
       if (this.snapAt != null && !this.snap && this.pz >= this.snapAt) this._beginSnap(this.snapDir);
+      if (this.turnPoseT > 0) this.turnPoseT = Math.max(0, this.turnPoseT - dt);
       const pend = this.path.pending;
       if (pend && !pend.committed && !this.offPath) {
         const w = this._turnWindow(this.speed);
@@ -3115,12 +3538,13 @@ class Game {
         this.snap.t += dt;
         const u = clamp(this.snap.t / this.snap.dur, 0, 1);
         const e = 1 - (1 - u) * (1 - u);
-        this.yaw = angLerp(this.snap.yaw0, logical.yaw, e);
+        const dest = (this.snap.destYaw != null) ? this.snap.destYaw : logical.yaw;
+        this.yaw = angLerp(this.snap.yaw0, dest, e);
         this.wx = lerp(this.snap.x0, logical.x, e);
         this.wz = lerp(this.snap.z0, logical.z, e);
         this.pose = { x: this.wx, z: this.wz, yaw: this.yaw, ...yawVec(this.yaw) };
         this.turnLean = this.snap.dir * Math.sin(u * Math.PI) * 0.9;
-        if (u >= 1) { this.snap = null; this.turnLean = 0; }
+        if (u >= 1) { this.yaw = dest; this.snap = null; this.turnLean *= 0.4; }
       } else {
         this.pose = logical;
         this.wx = logical.x; this.wz = logical.z; this.yaw = logical.yaw;
@@ -3137,8 +3561,8 @@ class Game {
       jumpY: Math.max(0, this.jumpY),
       sliding: this.slideT > 0 && this.jumpY <= 0.02,
       lean: this.lean + this.turnLean,
-      turning: !!(this.snap && this.snap.t < this.snap.dur),
-      turnDir: this.snap ? this.snap.dir : 0,
+      turning: this.turnPoseT > 0,
+      turnDir: this.turnPoseDir || (this.snap ? this.snap.dir : 0),
       falling: dying || this.state === 'over' || (this.offPath && this.jumpY < 0.1),
       fallT: this.deadT,
       onGround: this.jumpY <= 0.02,
@@ -3236,9 +3660,11 @@ class Game {
     if (o.nearMissed || this.offPath) return;
     const dz = o.z - this.pz;
     if (dz > 0.35 || dz < -0.15) return;
-    const same = Math.abs(laneX(o.lane) - this.px) < 0.7;
-    const adj = Math.abs((o.lane || 0) - this.lane) === 1 && Math.abs(laneX(o.lane) - this.px) < 1.4;
-    const jumped = o.type === 'low' && same && this.jumpY >= 0.68;
+    const covers = o.cover && o.cover.length ? o.cover : [o.lane || 0];
+    const same = o.span === 'all' || covers.some(l => Math.abs(laneX(l) - this.px) < 0.7);
+    const adj = covers.some(l => Math.abs(l - this.lane) === 1) && !same;
+    const need = (o.clearance != null ? o.clearance : 0.68);
+    const jumped = (o.type === 'low' || o.type === 'hurdle') && same && this.jumpY >= need;
     const slid = o.type === 'high' && same && this.slideT > 0;
     if (jumped || slid || adj) {
       o.nearMissed = true;
@@ -3260,8 +3686,15 @@ class Game {
     const shy = this.shake ? (hash(this.elapsed, 2) - 0.5) * this.shake * 0.3 : 0;
 
     this.camX += (this.px - this.camX) * Math.min(1, 6.2 * dt);
-    const yawFollow = this.snap ? 11 : 16;
-    this.camYaw = angLerp(this.camYaw || 0, this.yaw, 1 - Math.exp(-yawFollow * dt));
+    if (this.camTurn) {
+      this.camTurn.t += dt;
+      const u = clamp(this.camTurn.t / this.camTurn.dur, 0, 1);
+      const e = u * u * (3 - 2 * u); // smoothstep, a 0.26s swing instead of a pop
+      this.camYaw = angLerp(this.camTurn.yaw0, this.camTurn.yaw1, e);
+      if (u >= 1) { this.camYaw = this.camTurn.yaw1; this.camTurn = null; }
+    } else {
+      this.camYaw = angLerp(this.camYaw || 0, this.yaw, 1 - Math.exp(-16 * dt));
+    }
     const v = yawVec(this.camYaw);
     let dist, height, lookAhead, lookY, fov;
     if (home) {
@@ -3355,6 +3788,8 @@ class Game {
       collides: o => self.collides(o),
       addGate: (z, phase, span, lane) => self._addGate(z, phase, span, lane),
       addObs: (kind, lane, z) => self._addObs(kind, lane, z),
+      addHurdle: (span, z) => self._addHurdle(span, z),
+      arrowCount: () => (self.world.chevL.length + self.world.chevR.length),
       addCoin: (lane, z, h, phase) => self._addCoin(lane, z, h, phase),
       forceTurn: (type, atDist) => self.path.forceTurn(type, atDist),
       pendingTurn: () => self.path.pending && { type: self.path.pending.type, dist: self.path.pending.dist, committed: self.path.pending.committed },
@@ -3367,7 +3802,7 @@ class Game {
       objects() {
         return {
           gates: self.pools.gates.filter(o => o.live).map(o => ({ type: o.type, z: o.z, phase: o.phase, span: o.span, lane: o.lane, visible: o.mesh.visible })),
-          obs: self.pools.obs.filter(o => o.live).map(o => ({ type: o.type, z: o.z, lane: o.lane, visible: o.mesh.visible })),
+          obs: self.pools.obs.filter(o => o.live).map(o => ({ type: o.type, kind: o.kind, z: o.z, lane: o.lane, span: o.span, cover: o.cover, height: o.height, clearance: o.clearance, visible: o.mesh.visible })),
           coins: self.pools.coins.filter(o => o.live).map(o => ({ z: o.z, lane: o.lane, phase: o.phase }))
         };
       },
