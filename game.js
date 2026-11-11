@@ -1,10 +1,10 @@
-// Season Shift v5.0 — SEASON_SHIFT_V5_0
+// Season Shift v5.1 — SEASON_SHIFT_V5_1
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, tilt to steer, swipe to turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V5_0';
+const VERSION = 'SEASON_SHIFT_V5_1';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -339,6 +339,9 @@ class Music {
       const a = new Audio(s.music);
       a.loop = true; a.preload = 'auto'; a.volume = 0;
       a.crossOrigin = 'anonymous';
+      a.playsInline = true;
+      a.setAttribute('playsinline', '');
+      a.setAttribute('webkit-playsinline', '');
       return a;
     });
     this.current = -1;
@@ -350,7 +353,12 @@ class Music {
   unlock() {
     if (this.unlocked) return;
     this.unlocked = true;
-    this.tracks.forEach(a => { const p = a.play(); if (p && p.catch) p.catch(() => {}); a.pause(); a.currentTime = 0; });
+    this.tracks.forEach((a, i) => {
+      const p = a.play(); if (p && p.catch) p.catch(() => {});
+      // Prime every element inside the user-gesture window, but keep the
+      // current track running if we already chose one.
+      if (i !== this.current) { a.pause(); a.currentTime = 0; a.volume = 0; }
+    });
   }
   setMuted(m) {
     this.muted = m;
@@ -358,8 +366,18 @@ class Music {
     if (!m && this.current >= 0) this.tracks[this.current].volume = 1;
   }
   play(i, snap = false) {
-    if (i === this.current || i < 0 || i > 3) return;
+    if (i < 0 || i > 3) return;
     this.unlock();
+    // Already selected: still (re)start if paused — autoplay is often blocked
+    // on the first try and must resume on the first user gesture.
+    if (i === this.current) {
+      const cur = this.tracks[i];
+      if (cur.paused) {
+        const go = cur.play(); if (go && go.catch) go.catch(() => {});
+      }
+      if (!this.muted && cur.volume < 1) cur.volume = 1;
+      return;
+    }
     const prev = this.current;
     this.current = i;
     const next = this.tracks[i];
@@ -446,7 +464,7 @@ function makePathTexture() {
   }
   ctx.putImageData(img, 0, 0);
   const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.anisotropy = 8;
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -454,6 +472,25 @@ function makePathTexture() {
 }
 let _pathTex = null;
 function pathTex() { return _pathTex || (_pathTex = makePathTexture()); }
+
+// World XZ UVs so straight slabs and corner tiles share one continuous dirt
+// field — same grain, scale, and brightness, no joint seam. The texture is
+// isotropic, so a world mapping is safe (no “across-the-road” pattern to follow).
+const PATH_UV_TILE = PATH_W;
+function applyWorldPathUVs(mesh) {
+  mesh.updateWorldMatrix(true, false);
+  const geo = mesh.geometry.clone();
+  mesh.geometry = geo;
+  const pos = geo.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    uv[i * 2] = v.x / PATH_UV_TILE;
+    uv[i * 2 + 1] = v.z / PATH_UV_TILE;
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+}
 
 function _pushCornerTri(pos, nor, uv, ax, ay, az, bx, by, bz, cx, cy, cz, nx, ny, nz, ua, va, ub, vb, uc, vc) {
   pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
@@ -1630,6 +1667,7 @@ class World {
     if (!this.pathMat) this.pathMat = std(s.path, { roughness: 0.9, map: pathTex() });
     this.pathMat.color.setHex(s.path);
     this.curbMat.color.setHex(s.pathDark);
+    if (this.pathMatCorner) this.pathMatCorner.color.setHex(s.path);
     return this.pathMat;
   }
 
@@ -1647,12 +1685,13 @@ class World {
     const mat = this._pathMatFor(season);
     const half = PATH_W * 0.5;
     if (seg.type === 'straight') {
-      // Dirt plane and curbs stop exactly at the corner square. No overlap, so
-      // coplanar faces cannot z-fight a hairline across the joint.
+      // Straights butt into the corner with a tiny overlap so grass cannot
+      // show through as a joint line. World UVs keep the dirt continuous.
+      const JOIN = 0.05;
       let slabLen = Math.max(0.2, seg.length);
       let slabZ = 0;
-      if (seg.cap0 === 'corner') { slabLen -= half; slabZ += half * 0.5; }
-      if (seg.cap1 === 'corner') { slabLen -= half; slabZ -= half * 0.5; }
+      if (seg.cap0 === 'corner') { slabLen -= half - JOIN; slabZ += (half - JOIN) * 0.5; }
+      if (seg.cap1 === 'corner') { slabLen -= half - JOIN; slabZ -= (half - JOIN) * 0.5; }
       slabLen = Math.max(0.2, slabLen);
       const slab = new THREE.Mesh(this.geo.pathSlab, mat);
       slab.rotation.x = -Math.PI / 2;
@@ -1663,8 +1702,8 @@ class World {
       g.add(slab);
       let curbLen = seg.length;
       let curbZ = 0;
-      if (seg.cap0 === 'corner') { curbLen -= half; curbZ += half * 0.5; }
-      if (seg.cap1 === 'corner') { curbLen -= half; curbZ -= half * 0.5; }
+      if (seg.cap0 === 'corner') { curbLen -= half - JOIN; curbZ += (half - JOIN) * 0.5; }
+      if (seg.cap1 === 'corner') { curbLen -= half - JOIN; curbZ -= (half - JOIN) * 0.5; }
       curbLen = Math.max(0.2, curbLen);
       const curbL = new THREE.Mesh(this.geo.curb, this.curbMat);
       const curbR = new THREE.Mesh(this.geo.curb, this.curbMat);
@@ -1679,47 +1718,84 @@ class World {
       g.position.set(mid.x, 0, mid.z);
       g.rotation.y = seg.yaw0;
     } else {
-      // One continuous corner piece (mitered UVs so the dirt reads as the same
-      // road as the incoming and outgoing slabs). Gameplay heading still snaps
-      // 90°; only the camera yaw still curves around the sharp gameplay snap.
+      // Same dirt plane as the straights (shared world UVs, same height).
+      // Gameplay heading still snaps 90°; the camera yaw still eases around it.
       const typ = (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') ? seg.type : 'right';
-      const tile = new THREE.Mesh(buildCornerTileGeom(typ), mat);
-      tile.position.y = 0.021; // 1mm above the straight plane, kills joint z-fight
+      const OVER = 0.05;
+      const tile = new THREE.Mesh(this.geo.pathSlab, this._cornerMat());
+      tile.rotation.x = -Math.PI / 2;
+      tile.scale.set(PATH_W + OVER, PATH_W + OVER, 1);
+      tile.position.set(0, 0.10, 0);
       tile.receiveShadow = true;
       tile.castShadow = false;
       g.add(tile);
-      const edges = typ === 'tee' ? ['fwd']
-        : typ === 'left' ? ['left', 'fwd']
-        : typ === 'right' ? ['right', 'fwd']
-        : ['left', 'right', 'fwd'];
-      for (const e of edges) {
-        const c = new THREE.Mesh(this.geo.curb, this.curbMat);
-        c.scale.z = PATH_W;
-        c.castShadow = false;
-        c.receiveShadow = false;
-        if (e === 'fwd') { c.position.set(0, 0.12, half); c.rotation.y = Math.PI / 2; }
-        else if (e === 'left') { c.position.set(-half, 0.12, 0); }
-        else { c.position.set(half, 0.12, 0); }
-        g.add(c);
-      }
-      // Caps hide the 90° curb joints at the inner and outer corners of the L/T.
-      const cap = (x, z) => {
-        const k = new THREE.Mesh(this.geo.box, this.curbMat);
-        k.scale.set(0.22, 0.22, 0.22);
-        k.position.set(x, 0.12, z);
-        k.castShadow = false;
-        k.receiveShadow = false;
-        g.add(k);
-      };
-      if (typ === 'right') { cap(half, half); cap(-half, -half); }
-      else if (typ === 'left') { cap(-half, half); cap(half, -half); }
-      else { cap(-half, half); cap(half, half); cap(-half, -half); cap(half, -half); }
+      this._addCornerCurbs(g, typ);
       g.position.set(seg.x0, 0, seg.z0);
       g.rotation.y = seg.yaw0;
     }
     this.pathG.add(g);
     this._segMeshes.set(seg.id, g);
+    g.updateMatrixWorld(true);
+    g.traverse((obj) => {
+      if (obj.isMesh && obj.material && (obj.material === this.pathMat || obj.material === this.pathMatCorner)) {
+        applyWorldPathUVs(obj);
+      }
+    });
     return g;
+  }
+
+  _cornerMat() {
+    if (!this.pathMatCorner) {
+      this.pathMatCorner = this.pathMat.clone();
+      this.pathMatCorner.map = pathTex();
+      this.pathMatCorner.roughness = 0.9;
+      this.pathMatCorner.polygonOffset = true;
+      this.pathMatCorner.polygonOffsetFactor = -1;
+      this.pathMatCorner.polygonOffsetUnits = -1;
+    }
+    this.pathMatCorner.color.copy(this.pathMat.color);
+    return this.pathMatCorner;
+  }
+  _addCurb(g, x, z, rotY, len) {
+    const c = new THREE.Mesh(this.geo.curb, this.curbMat);
+    c.scale.z = len;
+    c.position.set(x, 0.12, z);
+    c.rotation.y = rotY || 0;
+    c.castShadow = false;
+    c.receiveShadow = false;
+    g.add(c);
+  }
+  _addCurbCap(g, x, z, s) {
+    const k = new THREE.Mesh(this.geo.box, this.curbMat);
+    const sz = s || 0.26;
+    k.scale.set(sz, 0.22, sz);
+    k.position.set(x, 0.12, z);
+    k.castShadow = false;
+    k.receiveShadow = false;
+    g.add(k);
+  }
+  _addCornerCurbs(g, typ) {
+    const half = PATH_W * 0.5;
+    // Outer L wraps the closed sides. Incoming and outgoing straight curbs
+    // already meet at the inner pivot; a cap there ties them into an elbow.
+    // Do not run stubs along the open entrance/exit — those block the roadway.
+    if (typ === 'right') {
+      this._addCurb(g, half, 0, 0, PATH_W);
+      this._addCurb(g, 0, half, Math.PI / 2, PATH_W);
+      this._addCurbCap(g, half, half, 0.30);
+      this._addCurbCap(g, -half, -half, 0.30);
+    } else if (typ === 'left') {
+      this._addCurb(g, -half, 0, 0, PATH_W);
+      this._addCurb(g, 0, half, Math.PI / 2, PATH_W);
+      this._addCurbCap(g, -half, half, 0.30);
+      this._addCurbCap(g, half, -half, 0.30);
+    } else {
+      this._addCurb(g, 0, half, Math.PI / 2, PATH_W);
+      this._addCurbCap(g, -half, half, 0.30);
+      this._addCurbCap(g, half, half, 0.30);
+      this._addCurbCap(g, -half, -half, 0.30);
+      this._addCurbCap(g, half, -half, 0.30);
+    }
   }
 
   _markPhaseExtra(path, beforeDist, lx) {
@@ -1921,8 +1997,10 @@ class World {
     const geo = this.geo.sphereLo;
     for (let i = 0; i < n; i++) {
       const m = new THREE.Mesh(geo, mat);
-      if (season === 0) m.scale.set(0.11, 0.035, 0.08);
-      else if (season === 2) m.scale.set(0.09, 0.025, 0.12);
+      if (season === 0) {
+        const k = rand(0.72, 1);
+        m.scale.set(0.05 * k, 0.028 * k, 0.038 * k); // smaller, thicker — not a flat disc
+      } else if (season === 2) m.scale.set(0.07, 0.022, 0.10);
       else if (season === 3) m.scale.setScalar(0.045);
       else m.scale.set(0.03, 0.03, 0.12);
       this.particleG.add(m);
@@ -1949,7 +2027,7 @@ class World {
       b.z = wz + rand(-0.3, 0.3);
       if (phase === BLOOM) {
         b.vx = rand(-1.6, 1.6); b.vy = rand(1.0, 2.8); b.vz = rand(-1.6, 1.6);
-        b.mesh.scale.set(0.12, 0.04, 0.08);
+        b.mesh.scale.set(0.055, 0.028, 0.04);
       } else {
         b.vx = rand(-0.6, 0.6); b.vy = rand(0.4, 1.6); b.vz = rand(-2.4, 0.2);
         b.mesh.scale.setScalar(0.07);
@@ -2385,6 +2463,7 @@ class Game {
 
     this._bindUI();
     this._bindInput();
+    this._armFirstGestureAudio();
     this._goHome(true);
     this._applySeasonVisuals(this.season, true);
     this._resize();
@@ -2752,8 +2831,22 @@ class Game {
     this.$.over.classList.add('hidden');
     this._refreshCoins();
     this._refreshMute();
-    if (!first) this.music.play(this.season, false);
+    // Always start (or resume) the current page's track, including first load.
+    this.music.play(this.season, !!first);
     this._layoutHome(true);
+  }
+  _armFirstGestureAudio() {
+    // iOS Safari blocks autoplay until a user gesture. The first touch
+    // anywhere — including a swipe start on the home carousel — unlocks
+    // Web Audio and starts this page's track (season 1 / index 0 on a
+    // fresh open), not only after a page change.
+    const evs = ['pointerdown', 'touchstart', 'touchend', 'click', 'keydown'];
+    const once = () => {
+      evs.forEach((t) => document.removeEventListener(t, once, true));
+      Sfx.unlock();
+      this.music.play(this.season, this.music.current !== this.season);
+    };
+    evs.forEach((t) => document.addEventListener(t, once, { capture: true, passive: true }));
   }
 
   openShop() {
