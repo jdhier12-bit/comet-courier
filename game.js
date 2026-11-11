@@ -1,10 +1,10 @@
-// Season Shift v4.7 — SEASON_SHIFT_V4_7
+// Season Shift v4.8 — SEASON_SHIFT_V4_8
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, swipe lanes, tilt turns, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
 
-const VERSION = 'SEASON_SHIFT_V4_7';
+const VERSION = 'SEASON_SHIFT_V4_8';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -12,6 +12,13 @@ const BEST_KEY = 'cometCourierBest';
 // Do not ship pip-v4.glb, pip-v5.glb, or pip-red-panda.glb to Pages or the iOS zip.
 const CHARACTER_MODEL = './assets/models/panda.glb';
 const CHARACTER_HEIGHT = 1.0;
+const HURDLE_MODELS = [
+  './assets/models/hurdle-spring.glb',
+  './assets/models/hurdle-summer.glb',
+  './assets/models/hurdle-autumn.glb',
+  './assets/models/hurdle-winter.glb'
+];
+const HURDLE_REF_WIDTH = 5.5;
 
 const BLOOM = 0, AURORA = 1;
 const PHASE_NAME = ['BLOOM', 'AURORA'];
@@ -2031,6 +2038,8 @@ class Pools {
     this.coins = [];
     this.gates = [];
     this.obs = [];
+    this._hurdleTpl = [null, null, null, null];
+    this.hurdlesReady = false;
     for (let i = 0; i < 48; i++) this.coins.push(this._coin());
     for (let i = 0; i < 8; i++) this.gates.push(this._gate());
     for (let i = 0; i < 28; i++) this.obs.push(this._obs());
@@ -2127,307 +2136,40 @@ class Pools {
     o.mFrame.emissiveIntensity = (solid ? 0.5 : 0.18) + crawl;
     o.panel.scale.z = solid ? 1 : 0.4;
   }
-  _hurdleNoise(x, y, z) {
-    const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
-    return s - Math.floor(s);
-  }
-  _ensureHurdleAssets() {
-    if (this._hg) return this._hg;
-    const petalShape = new THREE.Shape();
-    petalShape.moveTo(0, 0);
-    petalShape.bezierCurveTo(0.11, 0.04, 0.15, 0.2, 0, 0.36);
-    petalShape.bezierCurveTo(-0.15, 0.2, -0.11, 0.04, 0, 0);
-    const petal = new THREE.ExtrudeGeometry(petalShape, {
-      depth: 0.012, bevelEnabled: true, bevelThickness: 0.007, bevelSize: 0.01,
-      bevelSegments: 4, curveSegments: 20
-    });
-    petal.center();
 
-    // Smooth oval leaf (high-segment disc, slightly cupped) — no sharp extruded shards.
-    const leaf = new THREE.CircleGeometry(0.15, 24);
-    {
-      const pos = leaf.attributes.position;
-      for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i), y = pos.getY(i);
-        pos.setX(i, x * 0.62);
-        pos.setZ(i, 0.035 * (1 - Math.min(1, x * x * 40 + y * y * 12))); // slight cup
-      }
-      pos.needsUpdate = true;
-      leaf.computeVertexNormals();
-    }
-
-    const pts = [];
-    for (let i = 0; i <= 32; i++) {
-      const a = (i / 32) * Math.PI;
-      const r = Math.sin(a) * (0.96 + 0.14 * Math.sin(a));
-      const y = -Math.cos(a) * 0.78;
-      pts.push(new THREE.Vector2(Math.max(0.001, r), y));
-    }
-    const pumpkin = new THREE.LatheGeometry(pts, 64);
-    {
-      const pos = pumpkin.attributes.position;
-      for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-        const th = Math.atan2(z, x);
-        const mid = 1 - Math.min(1, Math.abs(y) / 0.78);
-        const lobe = 1 - 0.22 * Math.pow(Math.abs(Math.sin(th * 4)), 1.2) * mid;
-        pos.setX(i, x * lobe);
-        pos.setZ(i, z * lobe);
-      }
-      pos.needsUpdate = true;
-      pumpkin.computeVertexNormals();
-    }
-
-    const stemPts = [
-      new THREE.Vector2(0.045, 0),
-      new THREE.Vector2(0.04, 0.06),
-      new THREE.Vector2(0.028, 0.12),
-      new THREE.Vector2(0.02, 0.16)
-    ];
-    const stem = new THREE.LatheGeometry(stemPts, 14);
-
-    const cap = new THREE.CircleGeometry(1, 48);
-    {
-      const pos = cap.attributes.position;
-      const col = new Float32Array(pos.count * 3);
-      for (let i = 0; i < pos.count; i++) {
-        const r = Math.hypot(pos.getX(i), pos.getY(i));
-        const ring = 0.42 + 0.22 * (0.5 + 0.5 * Math.sin(r * 26 * Math.PI));
-        col[i * 3] = ring * 0.62;
-        col[i * 3 + 1] = ring * 0.42;
-        col[i * 3 + 2] = ring * 0.24;
-      }
-      cap.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    }
-
-    const spark = new THREE.OctahedronGeometry(0.028, 0);
-
-    this._hg = { petal, leaf, pumpkin, stem, cap, spark };
-    this._hm = {
-      bark: std(0x7a4e2c, { roughness: 0.84, metalness: 0.02 }),
-      barkDark: std(0x5a3518, { roughness: 0.8 }),
-      moss: std(0x3d9a52, { roughness: 0.72, emissive: 0x1a5a28, emissiveIntensity: 0.07 }),
-      mossLite: std(0x58b86a, { roughness: 0.68 }),
-      cap: new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0.0, vertexColors: true }),
-      hedge: std(0x2f8a3e, { roughness: 0.7, emissive: 0x145022, emissiveIntensity: 0.05 }),
-      hedgeDeep: std(0x247034, { roughness: 0.74 }),
-      leafA: std(0x3da84c, { roughness: 0.62, side: THREE.DoubleSide }),
-      leafB: std(0x2e8c40, { roughness: 0.64, side: THREE.DoubleSide }),
-      leafC: std(0x59c46a, { roughness: 0.6, side: THREE.DoubleSide }),
-      petal: [
-        std(0xff8fb3, { roughness: 0.45, emissive: 0xff6b9a, emissiveIntensity: 0.16, side: THREE.DoubleSide }),
-        std(0xfff176, { roughness: 0.45, emissive: 0xffd15c, emissiveIntensity: 0.14, side: THREE.DoubleSide }),
-        std(0xff9f43, { roughness: 0.45, emissive: 0xff7a2a, emissiveIntensity: 0.12, side: THREE.DoubleSide }),
-        std(0xf7f4ff, { roughness: 0.42, emissive: 0xffd0de, emissiveIntensity: 0.08, side: THREE.DoubleSide }),
-        std(0xff6b9a, { roughness: 0.45, emissive: 0xe85a8c, emissiveIntensity: 0.16, side: THREE.DoubleSide })
-      ],
-      stamen: std(0xffe08a, { roughness: 0.4, emissive: 0xffc14d, emissiveIntensity: 0.35 }),
-      pumpkin: std(0xf07820, { roughness: 0.5, emissive: 0xb84a10, emissiveIntensity: 0.07 }),
-      pumpkinDeep: std(0xd45e14, { roughness: 0.52, emissive: 0x9a3a0c, emissiveIntensity: 0.06 }),
-      pumpkinGold: std(0xff9a32, { roughness: 0.48, emissive: 0xd46a10, emissiveIntensity: 0.08 }),
-      vine: std(0x3da84c, { roughness: 0.62 }),
-      snow: std(0xf6fbff, { roughness: 0.42, metalness: 0.04, emissive: 0xdceefe, emissiveIntensity: 0.08 }),
-      snowShade: std(0xdce8f4, { roughness: 0.5, emissive: 0xc5d8ec, emissiveIntensity: 0.05 }),
-      spark: std(0xffffff, { roughness: 0.2, metalness: 0.35, emissive: 0xfff6d0, emissiveIntensity: 0.95 })
-    };
-    return this._hg;
-  }
-  _makeLogBody(len, radius) {
-    const radSeg = 48;
-    const hSeg = Math.max(18, Math.round(len * 12));
-    const g = new THREE.CylinderGeometry(radius, radius * 1.05, len, radSeg, hSeg, true);
-    const pos = g.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-      const th = Math.atan2(z, x);
-      const r = Math.hypot(x, z);
-      const groove = 0.038 * Math.sin(th * 11 + y * 0.4);
-      const n1 = 0.022 * Math.sin(th * 5.2 + y * 1.6) * Math.cos(y * 2.1);
-      const n2 = 0.014 * Math.sin(th * 19 + y * 3.4 + 1.7);
-      const belly = 1 + 0.045 * Math.cos((y / Math.max(len * 0.5, 0.2)) * Math.PI * 0.5);
-      const nr = (r + groove + n1 + n2) * belly;
-      pos.setX(i, Math.cos(th) * nr);
-      pos.setZ(i, Math.sin(th) * nr);
-    }
-    pos.needsUpdate = true;
-    g.computeVertexNormals();
-    return g;
-  }
-  _makeSnowMound(sx, sy, sz) {
-    const g = new THREE.SphereGeometry(1, 36, 28);
-    const pos = g.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      let x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-      const n = 0.07 * Math.sin(x * 5.1 + z * 3.7) + 0.045 * Math.sin(x * 9.2 + y * 6.3 + z * 4.4)
-        + 0.03 * Math.sin(x * 14.5 - z * 11.0);
-      let ny = y + n * (0.4 + Math.max(0, y));
-      if (ny < 0) ny *= 0.12; // sit on the path instead of burying a full sphere
-      pos.setX(i, x * (1 + n * 0.35));
-      pos.setY(i, ny);
-      pos.setZ(i, z * (1 + n * 0.3));
-    }
-    pos.needsUpdate = true;
-    g.computeVertexNormals();
-    const m = new THREE.Mesh(g, this._hm.snow);
-    m.scale.set(sx, sy, sz);
-    return m;
-  }
-  _addFlower(mesh, x, y, z, scale, petalMat) {
-    const g = new THREE.Group();
-    const petals = 6;
-    for (let i = 0; i < petals; i++) {
-      const p = new THREE.Mesh(this._hg.petal, petalMat);
-      const a = (i / petals) * Math.PI * 2;
-      p.position.set(Math.cos(a) * 0.07, 0.01, Math.sin(a) * 0.07);
-      p.rotation.set(-0.85, a, 0.12);
-      p.scale.setScalar(0.85);
-      g.add(p);
-    }
-    const mid = new THREE.Mesh(new THREE.SphereGeometry(0.045, 14, 12), this._hm.stamen);
-    mid.position.y = 0.02;
-    g.add(mid);
-    g.position.set(x, y, z);
-    g.scale.setScalar(scale);
-    g.rotation.y = this._hurdleNoise(x, y, z) * Math.PI * 2;
-    mesh.add(g);
-  }
-  _buildHurdle(mesh, season, width) {
-    const w = Math.max(1.3, width);
-    this._ensureHurdleAssets();
-    if (season === 0) {
-      // Spring: dense flower hedge with individual leaves and petals
-      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, Math.max(0.5, w - 0.85), 8, 24), this._hm.hedge);
-      body.rotation.z = Math.PI / 2; body.position.y = 0.30; body.castShadow = true; mesh.add(body);
-      const under = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, Math.max(0.4, w - 0.7), 8, 20), this._hm.hedgeDeep);
-      under.rotation.z = Math.PI / 2; under.position.set(0, 0.22, 0.06); mesh.add(under);
-      const nLeaves = Math.max(28, Math.round(w * 18));
-      const leafMats = [this._hm.leafA, this._hm.leafB, this._hm.leafC];
-      for (let i = 0; i < nLeaves; i++) {
-        const t = i / (nLeaves - 1);
-        const x = -w * 0.44 + t * w * 0.88 + (this._hurdleNoise(i, 2, w) - 0.5) * 0.16;
-        const ang = (i * 2.4 + t * 6) % (Math.PI * 2);
-        const lift = 0.28 + this._hurdleNoise(i, 5, w) * 0.26;
-        const lf = new THREE.Mesh(this._hg.leaf, leafMats[i % 3]);
-        const lz = Math.cos(ang) * 0.24;
-        lf.position.set(x, lift, lz);
-        lf.lookAt(x, lift + 0.45, lz * 2.4);
-        lf.rotateX(-0.35);
-        lf.rotateZ((this._hurdleNoise(i, 3, 1) - 0.5) * 0.4);
-        lf.scale.setScalar(0.7 + this._hurdleNoise(i, 8, 2) * 0.35);
-        lf.castShadow = i % 4 === 0;
-        mesh.add(lf);
-      }
-      const nFlowers = Math.max(7, Math.round(w * 3.8));
-      for (let i = 0; i < nFlowers; i++) {
-        const t = nFlowers === 1 ? 0.5 : i / (nFlowers - 1);
-        const x = -w * 0.40 + t * w * 0.80 + (this._hurdleNoise(i, 9, w) - 0.5) * 0.12;
-        const y = 0.50 + this._hurdleNoise(i, 4, 1) * 0.10;
-        const z = (this._hurdleNoise(i, 7, 3) - 0.5) * 0.22;
-        this._addFlower(mesh, x, y, z, 0.85 + this._hurdleNoise(i, 6, 2) * 0.35, this._hm.petal[i % this._hm.petal.length]);
-      }
-    } else if (season === 1) {
-      // Summer: fallen log with bark grooves, knots, and moss clumps
-      const radius = 0.27;
-      const len = Math.max(1.1, w - 0.15);
-      const log = new THREE.Mesh(this._makeLogBody(len, radius), this._hm.bark);
-      log.rotation.z = Math.PI / 2; log.position.y = radius; log.castShadow = true; mesh.add(log);
-      const capL = new THREE.Mesh(this._hg.cap, this._hm.cap);
-      capL.scale.setScalar(radius * 1.02);
-      capL.position.set(-len * 0.5, radius, 0);
-      capL.rotation.y = Math.PI / 2;
-      mesh.add(capL);
-      const capR = capL.clone();
-      capR.position.x = len * 0.5;
-      capR.rotation.y = -Math.PI / 2;
-      mesh.add(capR);
-      const knots = Math.max(2, Math.round(w * 0.7));
-      for (let i = 0; i < knots; i++) {
-        const t = knots === 1 ? 0.5 : (i + 0.4) / knots;
-        const knot = new THREE.Mesh(new THREE.SphereGeometry(0.07 + (i % 3) * 0.015, 18, 14), this._hm.barkDark);
-        const side = (i % 2 ? 1 : -1);
-        knot.scale.set(1, 0.55, 0.95);
-        knot.position.set(-len * 0.32 + t * len * 0.64, radius + 0.02, side * (radius * 0.72));
-        knot.rotation.y = side * 0.4;
-        mesh.add(knot);
-      }
-      const clumps = Math.max(5, Math.round(w * 2.2));
-      for (let i = 0; i < clumps; i++) {
-        const t = i / (clumps - 1);
-        const moss = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 12), (i % 2 ? this._hm.moss : this._hm.mossLite));
-        const sx = 0.55 + this._hurdleNoise(i, 1, w) * 0.45;
-        moss.scale.set(sx * 1.3, 0.45 + this._hurdleNoise(i, 2, 1) * 0.25, sx);
-        moss.position.set(
-          -len * 0.36 + t * len * 0.72 + (this._hurdleNoise(i, 3, 2) - 0.5) * 0.1,
-          radius + 0.14 + this._hurdleNoise(i, 4, 3) * 0.04,
-          (this._hurdleNoise(i, 5, 4) - 0.5) * 0.22
-        );
-        moss.castShadow = i % 2 === 0;
-        mesh.add(moss);
-      }
-    } else if (season === 2) {
-      // Autumn: ribbed pumpkins with stems, vines, and leaves
-      const n = Math.max(3, Math.min(5, Math.round(w / 1.05)));
-      const pumMats = [this._hm.pumpkin, this._hm.pumpkinDeep, this._hm.pumpkinGold];
-      for (let i = 0; i < n; i++) {
-        const t = n === 1 ? 0.5 : i / (n - 1);
-        const x = -w * 0.38 + t * w * 0.76;
-        const rad = 0.29 + (i % 3) * 0.025;
-        const body = new THREE.Mesh(this._hg.pumpkin, pumMats[i % 3]);
-        body.scale.setScalar(rad);
-        body.position.set(x, rad * 0.80, 0);
-        body.rotation.y = this._hurdleNoise(i, 1, 8) * Math.PI;
-        body.castShadow = true;
-        mesh.add(body);
-        const stem = new THREE.Mesh(this._hg.stem, this._hm.vine);
-        stem.position.set(x, rad * 1.52, 0);
-        stem.rotation.z = (this._hurdleNoise(i, 2, 3) - 0.5) * 0.5;
-        stem.scale.setScalar(rad / 0.28);
-        mesh.add(stem);
-        const leaf = new THREE.Mesh(this._hg.leaf, this._hm.leafA);
-        leaf.position.set(x + 0.08, rad * 0.55, 0.14);
-        leaf.rotation.set(-1.1, 0.4, 0.5);
-        leaf.scale.setScalar(0.9);
-        mesh.add(leaf);
-        if (i === n - 1 || i === 0) {
-          const curve = new THREE.QuadraticBezierCurve3(
-            new THREE.Vector3(x, rad * 1.15, 0.02),
-            new THREE.Vector3(x + 0.12, rad * 1.4, 0.1),
-            new THREE.Vector3(x + 0.18, rad * 0.7, 0.16)
-          );
-          const vine = new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.016, 8, false), this._hm.vine);
-          mesh.add(vine);
+  async loadHurdles() {
+    const loader = new GLTFLoader();
+    const loaded = await Promise.all(HURDLE_MODELS.map(url => loader.loadAsync(url)));
+    for (let s = 0; s < 4; s++) {
+      const scene = loaded[s].scene;
+      scene.traverse(o => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
         }
-      }
-    } else {
-      // Winter: soft layered snow bank with sparkle
-      const m1 = this._makeSnowMound(w * 0.50, 0.50, 0.58);
-      m1.position.set(0, 0.06, 0); m1.castShadow = true; mesh.add(m1);
-      const m2 = this._makeSnowMound(w * 0.30, 0.40, 0.42);
-      m2.material = this._hm.snowShade;
-      m2.position.set(-w * 0.22, 0.04, 0.08); mesh.add(m2);
-      const m3 = this._makeSnowMound(w * 0.24, 0.34, 0.36);
-      m3.position.set(w * 0.24, 0.03, -0.06); mesh.add(m3);
-      const m4 = this._makeSnowMound(w * 0.18, 0.28, 0.28);
-      m4.material = this._hm.snowShade;
-      m4.position.set(-w * 0.04, 0.18, -0.1); mesh.add(m4);
-      const m5 = this._makeSnowMound(w * 0.16, 0.22, 0.24);
-      m5.position.set(w * 0.12, 0.16, 0.1); mesh.add(m5);
-      // flatten anything underground by clipping visually with a slight lift already applied
-      const sparks = Math.max(8, Math.round(w * 4));
-      for (let i = 0; i < sparks; i++) {
-        const t = i / (sparks - 1);
-        const sp = new THREE.Mesh(this._hg.spark, this._hm.spark);
-        sp.position.set(
-          -w * 0.38 + t * w * 0.76 + (this._hurdleNoise(i, 1, 9) - 0.5) * 0.16,
-          0.22 + this._hurdleNoise(i, 2, 8) * 0.28,
-          (this._hurdleNoise(i, 3, 7) - 0.5) * 0.28
-        );
-        sp.rotation.set(this._hurdleNoise(i, 4, 1) * 1.5, this._hurdleNoise(i, 5, 2) * 2, 0.4);
-        const sc = 0.7 + this._hurdleNoise(i, 6, 3) * 0.8;
-        sp.scale.setScalar(sc);
-        mesh.add(sp);
-      }
+      });
+      this._hurdleTpl[s] = scene;
     }
+    this.hurdlesReady = true;
+  }
+  _fitHurdle(inst, season, span, width) {
+    if (season === 2) {
+      const groups = [];
+      inst.traverse(o => {
+        if (/^Pumpkin[ABC]$/.test(o.name)) groups.push(o);
+      });
+      groups.sort((a, b) => a.name.localeCompare(b.name));
+      if (span === 'lane' && groups.length >= 3) {
+        groups[0].visible = false;
+        groups[2].visible = false;
+      } else if (span === 'wide' && groups.length >= 3) {
+        groups[0].visible = false;
+        inst.position.x -= 1.0;
+      }
+      return;
+    }
+    const ref = HURDLE_REF_WIDTH;
+    if (width > 0.1 && Math.abs(width - ref) > 0.05) inst.scale.x = width / ref;
   }
 
   buildObs(o, kind, season) {
@@ -2450,13 +2192,18 @@ class Pools {
       const bar2 = bar.clone(); bar2.position.y = 1.42;
       mesh.add(p1, p2, bar, bar2);
     } else {
-      // Low jumpables: season-themed hurdles (log, flower hedge, pumpkins, snow bank).
+      // Low jumpables: Blender-authored season hurdles (hedge, log, pumpkins, snowbank).
       o.type = 'low';
       o.height = HURDLE_H;
       o.clearance = HURDLE_CLEAR;
       const span = o.span || 'lane';
       const width = span === 'all' ? 5.5 : (span === 'wide' ? 3.35 : 1.55);
-      this._buildHurdle(mesh, season, width);
+      const tpl = this._hurdleTpl[season];
+      if (tpl) {
+        const inst = tpl.clone(true);
+        this._fitHurdle(inst, season, span, width);
+        mesh.add(inst);
+      }
     }
     o.built = season + kind + (o.span || '');
   }
@@ -3771,7 +3518,7 @@ class Game {
       get deadT() { return self.deadT; },
       get save() { return self.save; },
       get VERSION() { return VERSION; },
-      get ready() { return !!self.penguin.ready; },
+      get ready() { return !!self.penguin.ready && !!self.pools.hurdlesReady; },
       startRun: (skip) => self.startRun(skip),
       laneX: laneX,
       get countT() { return self.countT; },
@@ -3815,7 +3562,7 @@ window.addEventListener('load', async () => {
   try {
     const g = new Game();
     window.__gameCore = g;
-    await g.penguin.load();
+    await Promise.all([g.penguin.load(), g.pools.loadHurdles()]);
     g.penguin.setCostume(g.save.equipped || 'classic');
     const boot = document.getElementById('boot');
     if (boot) boot.classList.add('hidden');
