@@ -1,10 +1,11 @@
-// Season Shift v5.1 — SEASON_SHIFT_V5_1
+// Season Shift v5.2 — SEASON_SHIFT_V5_2
 // An original 3D endless runner for Joseph. A giant panda, Bloom & Aurora.
 // Path corners / T-junctions, tilt to steer, swipe to turn, Bloom/Aurora theme.
 import * as THREE from './lib/three.module.min.js';
 import { GLTFLoader } from './lib/GLTFLoader.js';
+import { mergeGeometries } from './lib/BufferGeometryUtils.js';
 
-const VERSION = 'SEASON_SHIFT_V5_1';
+const VERSION = 'SEASON_SHIFT_V5_2';
 const SAVE_KEY = 'cometCourierSave';
 const BEST_KEY = 'cometCourierBest';
 
@@ -1441,7 +1442,7 @@ class World {
 
     this.fogColor = new THREE.Color(SEASONS[0].fog);
     this.fogBase = new THREE.Color(SEASONS[0].fog);
-    scene.fog = new THREE.Fog(this.fogColor, 28, 88);
+    scene.fog = new THREE.Fog(this.fogColor, 30, 100);
 
     this.hemi = new THREE.HemisphereLight(0xeef5ff, 0x3d4a32, 0.85);
     scene.add(this.hemi);
@@ -1464,8 +1465,13 @@ class World {
     scene.add(this.fill);
 
     this.terrainMat = makeTerrainMat(SEASONS[0]);
-    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(140, 200, 1, 1), this.terrainMat);
+    // Large world-aligned ground. Yawing a plane with Euler XYZ after a -90°
+    // tilt was flipping/tilting it when facing west, which showed the peach
+    // sky instead of the season grass.
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(420, 420, 1, 1), this.terrainMat);
+    this.ground.rotation.order = 'YXZ';
     this.ground.rotation.x = -Math.PI / 2;
+    this.ground.rotation.y = 0;
     this.ground.receiveShadow = true;
     this.ground.position.y = -0.04;
     this.group.add(this.ground);
@@ -1509,6 +1515,7 @@ class World {
     this._initMats();
     this._buildHills();
     this._resetParticles(0);
+    this._initForest();
   }
 
   _initMats() {
@@ -1876,6 +1883,9 @@ class World {
   }
 
   _decorateSeg(seg, season) {
+    // v5.2: roadside forest is instanced in _syncForest. Keep this as a
+    // no-op so we do not also spawn the old sparse unique-mesh trees.
+    return;
     if (seg._decorated === season + ':' + seg.id) return;
     seg._decorated = season + ':' + seg.id;
     if (seg.type !== 'straight') return;
@@ -1916,6 +1926,7 @@ class World {
     }
     this._syncChevrons(path);
     this._cullPropsOnPath(path);
+    this._syncForest(path, season, playerDist);
   }
 
   _cullPropsOnPath(path) {
@@ -1957,6 +1968,8 @@ class World {
     });
     for (const p of this.props) this._releaseProp(p);
     this.props.length = 0;
+    this._clearForest();
+    this._forestSeason = -1;
     this._clearPathMeshes();
     if (path) {
       for (const seg of path.segs) seg._decorated = '';
@@ -1984,6 +1997,409 @@ class World {
     if (instant) this.fogColor.copy(fogTarget);
     this._fogTarget = fogTarget;
     this.scene.fog.color.copy(this.fogColor);
+  }
+
+  _forestHash(a, b, c) {
+    return hash(a * 1.37 + c * 0.17, b * 2.11 + c * 0.53);
+  }
+  _forestTint(h) {
+    const c = this._forestColor || (this._forestColor = new THREE.Color());
+    const k = 0.86 + h * 0.28;
+    const r = 0.94 + this._forestHash(h, 1.1, 0.4) * 0.12;
+    return c.setRGB(k * r, k, k * (0.92 + this._forestHash(h, 2.2, 0.7) * 0.1));
+  }
+  _geoColored(src, hex) {
+    let geo = src.clone();
+    if (geo.index) geo = geo.toNonIndexed();
+    const n = geo.attributes.position.count;
+    const c = new THREE.Color(hex);
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    if (geo.attributes.uv) geo.deleteAttribute('uv');
+    if (geo.attributes.uv2) geo.deleteAttribute('uv2');
+    return geo;
+  }
+  _geoXform(src, hex, x, y, z, sx, sy, sz, rx, ry, rz) {
+    const g = this._geoColored(src, hex);
+    const e = new THREE.Euler(rx || 0, ry || 0, rz || 0);
+    const m = new THREE.Matrix4().compose(
+      new THREE.Vector3(x, y, z),
+      new THREE.Quaternion().setFromEuler(e),
+      new THREE.Vector3(sx, sy == null ? sx : sy, sz == null ? sx : sz)
+    );
+    g.applyMatrix4(m);
+    return g;
+  }
+  _mergeParts(parts) {
+    const merged = mergeGeometries(parts, false);
+    for (const p of parts) p.dispose();
+    if (merged) merged.computeBoundingSphere();
+    return merged;
+  }
+  _forestProtos(season) {
+    const P = [];
+    const trunk = this.geo.cylTaper, sph = this.geo.sphereMid, sphLo = this.geo.sphereLo, cone = this.geo.cone, cyl = this.geo.cyl, ico = this.geo.icoLo, frond = this.geo.frond;
+    if (season === 0) {
+      P.push(this._mergeParts([
+        this._geoXform(trunk, 0x6a3f22, 0, 0.75, 0, 0.58, 0.95, 0.58),
+        this._geoXform(sph, 0xff9ab8, -0.28, 1.62, 0.12, 0.68),
+        this._geoXform(sph, 0xffd0de, 0.32, 1.74, -0.16, 0.62),
+        this._geoXform(sph, 0x3da84c, 0.05, 1.48, 0.30, 0.55),
+        this._geoXform(sph, 0xff9ab8, -0.08, 1.96, -0.08, 0.58),
+        this._geoXform(sph, 0xffd0de, 0.18, 1.55, -0.36, 0.50)
+      ]));
+      P.push(this._mergeParts([
+        this._geoXform(trunk, 0x5a3218, 0, 0.88, 0, 0.70, 1.12, 0.70),
+        this._geoXform(sph, 0x3da84c, -0.30, 1.80, 0.20, 0.78),
+        this._geoXform(sph, 0x49b85c, 0.36, 1.92, -0.10, 0.72),
+        this._geoXform(sph, 0x3da84c, 0.00, 2.18, 0.08, 0.70),
+        this._geoXform(sph, 0xff9ab8, 0.22, 1.70, 0.34, 0.42),
+        this._geoXform(sph, 0x2f9a4a, -0.16, 1.58, -0.30, 0.58)
+      ]));
+      P.push(this._mergeParts([
+        this._geoXform(trunk, 0x6a3f22, 0, 0.58, 0, 0.50, 0.72, 0.50),
+        this._geoXform(sph, 0xffd0de, -0.34, 1.32, 0.06, 0.64),
+        this._geoXform(sph, 0xff9ab8, 0.30, 1.38, 0.18, 0.60),
+        this._geoXform(sph, 0xff9ab8, 0.02, 1.62, -0.16, 0.66),
+        this._geoXform(sph, 0xffd0de, -0.10, 1.22, -0.32, 0.48)
+      ]));
+    } else if (season === 1) {
+      const palm = (lean) => {
+        const parts = [this._geoXform(cyl, 0x8a6230, lean * 0.08, 1.1, 0, 0.13, 2.2, 0.13, 0, 0, lean)];
+        for (let i = 0; i < 7; i++) {
+          const a = (i / 7) * Math.PI * 2 + 0.2;
+          parts.push(this._geoXform(frond, i % 2 ? 0x2f9a4a : 0x49b85c, Math.cos(a) * 0.4, 2.15, Math.sin(a) * 0.4, 0.55, 0.1, 1.65, 1.05, -a, 0));
+        }
+        return this._mergeParts(parts);
+      };
+      P.push(palm(0.05));
+      P.push(palm(-0.08));
+      P.push(this._mergeParts([
+        this._geoXform(trunk, 0x6a3f22, 0, 0.8, 0, 0.65, 1.0, 0.65),
+        this._geoXform(sph, 0x3da84c, -0.28, 1.75, 0.16, 0.75),
+        this._geoXform(sph, 0x49b85c, 0.30, 1.88, -0.12, 0.70),
+        this._geoXform(sph, 0x2f9a4a, 0.02, 2.10, 0.04, 0.62),
+        this._geoXform(sph, 0x3da84c, -0.10, 1.58, -0.28, 0.52)
+      ]));
+    } else if (season === 2) {
+      const autumn = (cols, h) => this._mergeParts([
+        this._geoXform(trunk, 0x5a3218, 0, 0.8, 0, 0.68, 1.0, 0.68),
+        this._geoXform(sph, cols[0], -0.32, 1.62 + h, 0.16, 0.74),
+        this._geoXform(sph, cols[1], 0.34, 1.78 + h, -0.12, 0.70),
+        this._geoXform(sph, cols[2], 0.04, 2.02 + h, 0.08, 0.66),
+        this._geoXform(sph, cols[0], -0.12, 1.50 + h, -0.32, 0.56),
+        this._geoXform(sph, cols[1], 0.20, 1.58 + h, 0.34, 0.50)
+      ]);
+      P.push(autumn([0xff7a2a, 0xe03a2a, 0xffc14d], 0));
+      P.push(autumn([0xe03a2a, 0xffc14d, 0xff7a2a], 0.15));
+      P.push(autumn([0xffc14d, 0xff7a2a, 0xffc14d], -0.12));
+    } else {
+      const pine = (h, snow) => {
+        const parts = [this._geoXform(trunk, 0x4a2a14, 0, 0.7, 0, 0.52, 0.9, 0.52)];
+        for (let i = 0; i < 4; i++) {
+          const sc = 1.12 - i * 0.2;
+          parts.push(this._geoXform(cone, i % 2 ? 0x1f6a3a : 0x2a8050, 0, 1.05 + i * 0.55 * h, 0, sc, 0.85 * h, sc));
+          if (snow) parts.push(this._geoXform(sph, 0xf6fbff, 0, 1.26 + i * 0.55 * h, 0, sc * 0.6, 0.16, sc * 0.6));
+        }
+        return this._mergeParts(parts);
+      };
+      P.push(pine(1, true));
+      P.push(pine(1.15, true));
+      P.push(pine(0.88, false));
+    }
+    const bushHex = [0x3d9a48, 0x49b85c, 0xe07a28, 0xe8f0f8][season];
+    P.push(this._mergeParts([
+      this._geoXform(sphLo, bushHex, 0, 0.22, 0, 0.42, 0.30, 0.42),
+      this._geoXform(sphLo, season === 2 ? 0xffc14d : bushHex, 0.16, 0.28, 0.10, 0.28, 0.22, 0.28)
+    ]));
+    const rockHex = season === 3 ? 0xdde6ee : 0xb8c0b0;
+    P.push(this._mergeParts([
+      this._geoXform(ico, rockHex, 0, 0.16, 0, 0.34, 0.22, 0.28)
+    ]));
+    return P;
+  }
+  _initForest() {
+    if (this.forestG) {
+      while (this.forestG.children.length) {
+        const m = this.forestG.children[0];
+        this.forestG.remove(m);
+        if (m.dispose) m.dispose();
+      }
+    } else {
+      this.forestG = new THREE.Group();
+      this.group.add(this.forestG);
+    }
+    if (!this.forestMat) {
+      this.forestMat = new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.82, metalness: 0, fog: true
+      });
+    }
+    this._forestDummy = this._forestDummy || new THREE.Object3D();
+    this._forestMtx = this._forestMtx || new THREE.Matrix4();
+    this._forestCells = new Map();
+    const caps = [240, 240, 240, 300, 200];
+    const names = ['treeA', 'treeB', 'treeC', 'bush', 'rock'];
+    const protos = this._forestProtos(this.season | 0);
+    this._forestBatches = protos.map((geo, i) => {
+      const mesh = new THREE.InstancedMesh(geo, this.forestMat, caps[i]);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      mesh.count = 0;
+      // Ensure instanceColor buffer exists for tint variation.
+      mesh.setColorAt(0, new THREE.Color(1, 1, 1));
+      mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      this.forestG.add(mesh);
+      return { mesh, free: [], next: 0, name: names[i], cap: caps[i] };
+    });
+  }
+  _clearForest() {
+    if (!this._forestBatches) return;
+    for (const b of this._forestBatches) {
+      b.mesh.count = 0;
+      b.free.length = 0;
+      b.next = 0;
+      b.mesh.instanceMatrix.needsUpdate = true;
+    }
+    this._forestCells.clear();
+  }
+  _forestAlloc(batch, x, z, scale, rotY, tint) {
+    const i = batch.free.length ? batch.free.pop() : batch.next++;
+    if (i >= batch.cap) { batch.next = batch.cap; return -1; }
+    const o = this._forestDummy;
+    o.position.set(x, 0, z);
+    o.rotation.set(0, rotY, 0);
+    o.scale.setScalar(scale);
+    o.updateMatrix();
+    batch.mesh.setMatrixAt(i, o.matrix);
+    if (tint && batch.mesh.instanceColor) batch.mesh.setColorAt(i, tint);
+    batch.mesh.count = Math.max(batch.mesh.count, i + 1);
+    return i;
+  }
+  _forestHide(item) {
+    if (!item || item.hidden) return;
+    const b = this._forestBatches[item.bi];
+    const o = this._forestDummy;
+    o.position.set(0, -80, 0);
+    o.scale.setScalar(0);
+    o.rotation.set(0, 0, 0);
+    o.updateMatrix();
+    b.mesh.setMatrixAt(item.index, o.matrix);
+    b.free.push(item.index);
+    item.hidden = true;
+    b.mesh.instanceMatrix.needsUpdate = true;
+  }
+  _forestFlush() {
+    if (!this._forestBatches) return;
+    for (const b of this._forestBatches) {
+      b.mesh.instanceMatrix.needsUpdate = true;
+      if (b.mesh.instanceColor) b.mesh.instanceColor.needsUpdate = true;
+    }
+  }
+  forestStats() {
+    if (!this._forestBatches) return { trees: 0, bushes: 0, rocks: 0, instances: 0 };
+    let trees = 0, bushes = 0, rocks = 0;
+    for (const cell of this._forestCells.values()) {
+      for (const it of cell) {
+        if (it.hidden) continue;
+        if (it.kind === 'bush') bushes++;
+        else if (it.kind === 'rock') rocks++;
+        else trees++;
+      }
+    }
+    const instances = this._forestBatches.reduce((s, b) => s + b.mesh.count, 0);
+    return { trees, bushes, rocks, instances };
+  }
+  _inSightWedge(path, x, z) {
+    if (!path) return false;
+    const list = [];
+    for (const seg of path.segs) {
+      if (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') list.push(seg);
+    }
+    if (path.pendingCorner) list.push(path.pendingCorner);
+    const clearR = 9.4;
+    for (const c of list) {
+      const typ = c.type;
+      const v = yawVec(c.yaw0);
+      const dx = x - c.x0, dz = z - c.z0;
+      const along = dx * v.fx + dz * v.fz;
+      const lat = dx * v.sx + dz * v.sz;
+      if (typ === 'right') {
+        // Inner of a right turn is -lat (screen-right). Keep that wedge open
+        // so the exit and the corner stay visible on approach.
+        if (along > -12 && along < 9 && lat < 1.2 && lat > -clearR) return true;
+      } else if (typ === 'left') {
+        if (along > -12 && along < 9 && lat > -1.2 && lat < clearR) return true;
+      } else if (typ === 'tee') {
+        if (along > -12 && along < 6 && Math.abs(lat) < clearR) return true;
+      }
+    }
+    return false;
+  }
+  _forestPlace(segId, kind, x, z, scale, rotY, tint) {
+    if (!this._forestBatches) return;
+    const path = this._pathRef;
+    if (path && onAnyPath(path, x, z, PATH_W * 0.5 + 0.7)) return;
+    if (path && this._inSightWedge(path, x, z)) return;
+    let bi;
+    if (kind === 'bush') bi = 3;
+    else if (kind === 'rock') bi = 4;
+    else bi = kind; // 0,1,2
+    const batch = this._forestBatches[bi];
+    const index = this._forestAlloc(batch, x, z, scale, rotY, tint);
+    if (index < 0) return;
+    if (!this._forestCells.has(segId)) this._forestCells.set(segId, []);
+    this._forestCells.get(segId).push({ bi, index, x, z, kind, hidden: false });
+  }
+  _releaseForestCell(id) {
+    const cell = this._forestCells.get(id);
+    if (!cell) return;
+    for (const it of cell) this._forestHide(it);
+    this._forestCells.delete(id);
+  }
+  _decorateForest(seg, season, playerDist) {
+    const id = seg.id;
+    if (this._forestCells.has(id)) return;
+    this._forestCells.set(id, []);
+    if (seg.type === 'straight') this._decorateStraightForest(seg, season);
+    else if (seg.type === 'left' || seg.type === 'right' || seg.type === 'tee') this._decorateCornerForest(seg, season);
+    this._forestFlush();
+  }
+  _decorateStraightForest(seg, season) {
+    const id = seg.id;
+    const curb = PATH_W * 0.5 + 0.2;
+    const bands = [
+      { min: 1.05, max: 3.05, step: 1.55, density: 0.92, cluster: 0.34 },
+      { min: 3.5, max: 8.2, step: 2.00, density: 0.86, cluster: 0.24 },
+      { min: 8.6, max: 15.5, step: 2.80, density: 0.78, cluster: 0.16 },
+      { min: 16.0, max: 26.0, step: 4.0, density: 0.64, cluster: 0.10 }
+    ];
+    let slot = 0;
+    for (let b = 0; b < bands.length; b++) {
+      const band = bands[b];
+      for (const side of [-1, 1]) {
+        let d = seg.dist0 + 0.6 + this._forestHash(id, b, side + 3) * band.step;
+        while (d < seg.dist1 - 0.4) {
+          slot++;
+          const h0 = this._forestHash(id, slot, side + d * 0.01);
+          const stepJ = band.step * (0.72 + this._forestHash(id, slot, 9) * 0.7);
+          if (h0 > band.density) { d += stepJ; continue; }
+          if (this._inSightWedge(this._pathRef, ...(() => {
+            const p = poseAtStraight(seg, d, side * (curb + band.min));
+            return [p.x, p.z];
+          })())) { d += stepJ; continue; }
+          const nClump = this._forestHash(id, slot, 11) < band.cluster ? (this._forestHash(id, slot, 12) < 0.45 ? 3 : 2) : 1;
+          for (let k = 0; k < nClump; k++) {
+            const hk = this._forestHash(id, slot, 20 + k);
+            const along = d + (k === 0 ? (hk - 0.5) * 0.9 : (this._forestHash(id, slot, 30 + k) - 0.5) * 1.8);
+            if (along < seg.dist0 || along > seg.dist1) continue;
+            const depth = band.min + this._forestHash(id, slot, 40 + k) * (band.max - band.min);
+            const lat = side * (curb + depth + (k ? (hk - 0.5) * 1.3 : 0));
+            const pose = poseAtStraight(seg, along, lat);
+            const typ = (this._forestHash(id, slot, 50 + k) * 3) | 0;
+            const scale = 0.75 + this._forestHash(id, slot, 60 + k) * 0.7;
+            const rot = this._forestHash(id, slot, 70 + k) * Math.PI * 2;
+            const tint = this._forestTint(this._forestHash(id, slot, 80 + k));
+            this._forestPlace(id, typ, pose.x, pose.z, scale, rot, tint);
+            if (b <= 1 && this._forestHash(id, slot, 90 + k) < 0.45) {
+              const under = poseAtStraight(seg, along + (hk - 0.5) * 0.7, lat + side * (0.55 + hk * 0.5));
+              const ukind = this._forestHash(id, slot, 100 + k) < 0.4 ? 'rock' : 'bush';
+              const us = ukind === 'rock' ? (0.7 + hk * 0.8) : (0.65 + hk * 0.9);
+              this._forestPlace(id, ukind, under.x, under.z, us, rot + 1.1, tint);
+            }
+          }
+          d += stepJ;
+        }
+      }
+    }
+  }
+  _decorateCornerForest(seg, season) {
+    const id = seg.id;
+    const typ = seg.type;
+    const v = yawVec(seg.yaw0);
+    const curb = PATH_W * 0.5 + 0.2;
+    const half = PATH_W * 0.5;
+    // Sample points along the OUTER L (and the back of a tee) at several depths.
+    const outerSides = typ === 'right' ? [1] : typ === 'left' ? [-1] : [];
+    const edges = [];
+    if (typ === 'right') {
+      // +X edge (incoming left/outer) and +Z far edge
+      edges.push({ ax: half, az: -half - 4, bx: half, bz: half + 4, nx: 1, nz: 0 });
+      edges.push({ ax: -half - 2, az: half, bx: half + 4, bz: half, nx: 0, nz: 1 });
+    } else if (typ === 'left') {
+      edges.push({ ax: -half, az: -half - 4, bx: -half, bz: half + 4, nx: -1, nz: 0 });
+      edges.push({ ax: half + 2, az: half, bx: -half - 4, bz: half, nx: 0, nz: 1 });
+    } else {
+      // tee: only the far/back edge is outer; sides are exits (sightline)
+      edges.push({ ax: -half - 4, az: half, bx: half + 4, bz: half, nx: 0, nz: 1 });
+    }
+    const bands = [
+      { min: 1.05, max: 3.1, step: 1.7, density: 0.9 },
+      { min: 3.5, max: 8.0, step: 2.2, density: 0.8 },
+      { min: 8.5, max: 16, step: 3.0, density: 0.7 },
+      { min: 16.5, max: 25, step: 4.2, density: 0.55 }
+    ];
+    let slot = 0;
+    for (const e of edges) {
+      const len = Math.hypot(e.bx - e.ax, e.bz - e.az) || 1;
+      const ux = (e.bx - e.ax) / len, uz = (e.bz - e.az) / len;
+      for (const band of bands) {
+        let t = this._forestHash(id, slot, 1) * band.step;
+        while (t < len) {
+          slot++;
+          const h0 = this._forestHash(id, slot, 2);
+          const stepJ = band.step * (0.7 + this._forestHash(id, slot, 3) * 0.7);
+          if (h0 > band.density) { t += stepJ; continue; }
+          const depth = band.min + this._forestHash(id, slot, 4) * (band.max - band.min);
+          const px = e.ax + ux * t + e.nx * depth + (h0 - 0.5) * 0.6;
+          const pz = e.az + uz * t + e.nz * depth + (this._forestHash(id, slot, 5) - 0.5) * 0.6;
+          const wx = seg.x0 + v.fx * pz + v.sx * px;
+          const wz = seg.z0 + v.fz * pz + v.sz * px;
+          const typI = (this._forestHash(id, slot, 6) * 3) | 0;
+          const scale = 0.78 + this._forestHash(id, slot, 7) * 0.7;
+          const rot = this._forestHash(id, slot, 8) * Math.PI * 2;
+          this._forestPlace(id, typI, wx, wz, scale, rot, this._forestTint(h0));
+          if (band.min < 4 && this._forestHash(id, slot, 9) < 0.4) {
+            const bx = wx + e.nx * 0.6, bz = wz + e.nz * 0.6;
+            const ukind = this._forestHash(id, slot, 10) < 0.4 ? 'rock' : 'bush';
+            this._forestPlace(id, ukind, bx, bz, 0.7 + h0 * 0.8, rot, this._forestTint(h0));
+          }
+          t += stepJ;
+        }
+      }
+    }
+  }
+  _syncForest(path, season, playerDist) {
+    if (!this._forestBatches || this._forestSeason !== season) {
+      this.season = season;
+      this._initForest();
+      this._forestSeason = season;
+    }
+    const keep = new Set();
+    const visuals = path.visuals();
+    for (const seg of visuals) {
+      const inWindow = seg.type !== 'straight'
+        ? (seg.dist0 > playerDist - 28 && seg.dist0 < playerDist + 95)
+        : (seg.dist1 > playerDist - 22 && seg.dist0 < playerDist + 95);
+      if (!inWindow) continue;
+      keep.add(seg.id);
+      this._decorateForest(seg, season, playerDist);
+    }
+    for (const id of [...this._forestCells.keys()]) {
+      if (!keep.has(id)) this._releaseForestCell(id);
+    }
+    // Hide anything that ended up on the road or in a corner sightline after the path changed.
+    for (const cell of this._forestCells.values()) {
+      for (const it of cell) {
+        if (it.hidden) continue;
+        if (onAnyPath(path, it.x, it.z, PATH_W * 0.5 + 0.7) || this._inSightWedge(path, it.x, it.z)) this._forestHide(it);
+      }
+    }
+    this._forestFlush();
   }
 
   _resetParticles(season) {
@@ -2048,7 +2464,7 @@ class World {
     const yaw = pose ? pose.yaw : 0;
     const v = pose || yawVec(yaw);
     this.ground.position.set(wx, -0.04, wz);
-    this.ground.rotation.y = yaw;
+    this.ground.rotation.y = 0;
     this.ocean.position.set(wx + v.sx * 22 + v.fx * 8, -0.12, wz + v.sz * 22 + v.fz * 8);
     this.ocean.rotation.y = yaw;
     if (this.ocean.visible) this.oceanMat.uniforms.uTime.value = this.time;
@@ -3725,6 +4141,7 @@ class Game {
       },
       inCornerSafe: z => self._inCornerSafe(z),
       cornerSafeDist: () => self._cornerSafeDist(),
+      forestStats: () => self.world.forestStats(),
       objects() {
         return {
           gates: self.pools.gates.filter(o => o.live).map(o => ({ type: o.type, z: o.z, phase: o.phase, span: o.span, lane: o.lane, visible: o.mesh.visible })),
